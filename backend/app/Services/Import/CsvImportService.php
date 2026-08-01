@@ -113,9 +113,44 @@ class CsvImportService
     }
 
     /**
-     * Maps header names to column indices, case-insensitively, so
-     * reordered (but recognizable) headers still work — see DECISIONS.md
-     * "CSV import".
+     * Accepted spellings per target column, already normalized (see
+     * normalizeHeader). Matching on an alias list rather than one exact
+     * string because people reasonably write "First Name", "first_name",
+     * "FirstName" or "fname" and all mean the same thing — an over-strict
+     * matcher drops the column silently, which is worse than failing
+     * loudly. Found live: a real import used "first_name,last_name,email"
+     * and lost 994 names while still succeeding, because only `email`
+     * matched.
+     */
+    private const COLUMN_ALIASES = [
+        'email' => ['email', 'emailaddress', 'mail', 'mailaddress'],
+        'first_name' => ['firstname', 'fname', 'givenname', 'forename'],
+        'last_name' => ['lastname', 'lname', 'surname', 'familyname'],
+    ];
+
+    /**
+     * Lowercases and strips everything that isn't a letter or digit, so
+     * separators and casing stop mattering: "First Name", "first_name",
+     * "First-Name" and "FIRSTNAME" all collapse to "firstname".
+     */
+    private function normalizeHeader(string $name, bool $isFirstColumn): string
+    {
+        if ($isFirstColumn) {
+            // Excel/Windows tools commonly prepend a UTF-8 BOM to
+            // exported CSVs, which would otherwise silently break
+            // matching the first column's name (e.g. "Email" reads
+            // as "\u{FEFF}Email" and never matches).
+            $name = preg_replace('/^\x{FEFF}/u', '', $name) ?? $name;
+        }
+
+        return strtolower(preg_replace('/[^\p{L}\p{N}]+/u', '', $name) ?? $name);
+    }
+
+    /**
+     * Maps header names to column indices, tolerant of casing, spacing,
+     * separators and common synonyms, so reordered or
+     * differently-spelled-but-recognizable headers still work — see
+     * DECISIONS.md "CSV import".
      *
      * @param  string[]  $header
      * @return array{email?:int, first_name?:int, last_name?:int}
@@ -124,26 +159,20 @@ class CsvImportService
     {
         $byName = [];
         foreach ($header as $index => $name) {
-            $name = (string) $name;
-            if ($index === 0) {
-                // Excel/Windows tools commonly prepend a UTF-8 BOM to
-                // exported CSVs, which would otherwise silently break
-                // matching the first column's name (e.g. "Email" reads
-                // as "\u{FEFF}Email" and never matches).
-                $name = preg_replace('/^\x{FEFF}/u', '', $name) ?? $name;
-            }
-            $byName[strtolower(trim($name))] = $index;
+            $normalized = $this->normalizeHeader((string) $name, $index === 0);
+            // First occurrence wins, so a stray duplicate column later in
+            // the header can't silently steal the mapping.
+            $byName[$normalized] ??= $index;
         }
 
         $map = [];
-        if (isset($byName['email'])) {
-            $map['email'] = $byName['email'];
-        }
-        if (isset($byName['first name'])) {
-            $map['first_name'] = $byName['first name'];
-        }
-        if (isset($byName['last name'])) {
-            $map['last_name'] = $byName['last name'];
+        foreach (self::COLUMN_ALIASES as $target => $aliases) {
+            foreach ($aliases as $alias) {
+                if (isset($byName[$alias])) {
+                    $map[$target] = $byName[$alias];
+                    break;
+                }
+            }
         }
 
         return $map;
@@ -193,8 +222,11 @@ class CsvImportService
 
             $emails = array_keys($candidates);
 
-            $existing = Email::whereIn('email', $emails)->pluck('email')->all();
+            $existingRows = Email::whereIn('email', $emails)->get(['id', 'email', 'first_name', 'last_name']);
+            $existing = $existingRows->pluck('email')->all();
             $duplicateCount += count($existing);
+
+            $this->backfillMissingNames($existingRows, $candidates);
 
             $newRows = array_diff_key($candidates, array_flip($existing));
             if (empty($newRows)) {
@@ -235,6 +267,43 @@ class CsvImportService
         }
         if ($duplicateCount > 0) {
             $batch->increment('duplicate_count', $duplicateCount);
+        }
+    }
+
+    /**
+     * Fills in first/last name on already-known addresses when the
+     * incoming CSV has a name and the stored record doesn't.
+     *
+     * This is deliberately narrow and does NOT contradict the dedup rule
+     * in DECISIONS.md: verification status/history and the original
+     * batch_id are untouched, and a name that's already stored is never
+     * overwritten by a re-import. It only ever fills blanks — which makes
+     * re-uploading a corrected file a way to recover names that an
+     * earlier import dropped, instead of them being permanently lost to
+     * dedup.
+     *
+     * @param  \Illuminate\Support\Collection<int, Email>  $existingRows
+     * @param  array<string, array{first_name:?string, last_name:?string}>  $candidates
+     */
+    private function backfillMissingNames($existingRows, array $candidates): void
+    {
+        foreach ($existingRows as $row) {
+            $incoming = $candidates[$row->email] ?? null;
+            if ($incoming === null) {
+                continue;
+            }
+
+            $updates = [];
+            if (($row->first_name ?? '') === '' && ! empty($incoming['first_name'])) {
+                $updates['first_name'] = $incoming['first_name'];
+            }
+            if (($row->last_name ?? '') === '' && ! empty($incoming['last_name'])) {
+                $updates['last_name'] = $incoming['last_name'];
+            }
+
+            if (! empty($updates)) {
+                Email::whereKey($row->id)->update($updates);
+            }
         }
     }
 
