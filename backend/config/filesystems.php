@@ -36,6 +36,20 @@ return [
             'serve' => true,
             'throw' => false,
             'report' => false,
+            // Flysystem's own defaults (0600 files / 0700 dirs) shut out
+            // anyone but the file's creator. In production, uploads (CSV
+            // imports) are created by PHP-FPM as www-data, but the queue
+            // worker that reads them back runs as a different user
+            // (deploy, via Supervisor) — with the Flysystem defaults that
+            // worker gets a silent, permanent "Permission denied" on
+            // every import (found live in production: uploads got stuck
+            // at PENDING forever with no error surfaced to the batch
+            // status). 664/2775 match the group-writable ownership
+            // DEPLOYMENT.md sets up for storage/ (www-data:deploy).
+            'permissions' => [
+                'file' => ['public' => 0664, 'private' => 0664],
+                'dir' => ['public' => 02775, 'private' => 02775],
+            ],
         ],
 
         'public' => [

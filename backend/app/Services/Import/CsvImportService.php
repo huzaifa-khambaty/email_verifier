@@ -35,16 +35,26 @@ class CsvImportService
     {
         $path = Storage::disk('local')->path($batch->stored_path);
 
-        $handle = fopen($path, 'rb');
-        if ($handle === false) {
-            $batch->update(['status' => 'FAILED']);
-
-            throw new RuntimeException("Could not open stored CSV for batch {$batch->id}: {$path}");
-        }
-
+        $handle = null;
         $errorHandle = null;
 
         try {
+            // fopen() failure (missing file, permission denied) raises a
+            // PHP warning that Laravel's error handler converts to an
+            // ErrorException — that exception was previously thrown from
+            // *outside* this try block (fopen used to sit above it), so
+            // the batch was never marked FAILED and stayed stuck at
+            // PENDING forever. Found live in production: an
+            // storage/app/private ownership mismatch between the web
+            // server (uploads) and the queue worker (processes) meant
+            // every import silently hung. Moving fopen() in here ensures
+            // any failure to open the file is caught the same as every
+            // other failure mode below.
+            $handle = fopen($path, 'rb');
+            if ($handle === false) {
+                throw new RuntimeException("Could not open stored CSV for batch {$batch->id}: {$path}");
+            }
+
             $batch->update([
                 'status' => 'IMPORTING',
                 'started_at' => $batch->started_at ?? now(),
@@ -93,7 +103,9 @@ class CsvImportService
 
             throw $e;
         } finally {
-            fclose($handle);
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
             if ($errorHandle !== null) {
                 fclose($errorHandle);
             }
