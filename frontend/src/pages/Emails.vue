@@ -38,21 +38,34 @@ const error = ref('')
 
 const activeFilter = ref(null)
 const search = ref('')
+const from = ref('')
+const to = ref('')
 const page = ref(1)
 
-let searchTimer = null
+let filterTimer = null
+
+// Search + date range, shared by the list, the stat cards AND the
+// download, so all three always describe the same set. If the cards
+// ignored the date range they'd contradict the list sitting under them.
+const filterParams = computed(() => {
+  const params = {}
+  if (search.value.trim()) params.search = search.value.trim()
+  if (from.value) params.from = from.value
+  if (to.value) params.to = to.value
+  return params
+})
+
+const dateRangeActive = computed(() => Boolean(from.value || to.value))
 
 const queryParams = computed(() => {
-  const params = { page: page.value, per_page: 25 }
+  const params = { page: page.value, per_page: 25, ...filterParams.value }
   if (activeFilter.value) params.status = activeFilter.value
-  if (search.value.trim()) params.search = search.value.trim()
   return params
 })
 
 async function fetchStats() {
   try {
-    const params = search.value.trim() ? { search: search.value.trim() } : {}
-    const { data } = await api.get('/emails/stats', { params })
+    const { data } = await api.get('/emails/stats', { params: filterParams.value })
     stats.value = data
   } catch {
     // Non-fatal: the list below is still usable without the cards.
@@ -87,20 +100,28 @@ function changePage(delta) {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+function clearDates() {
+  from.value = ''
+  to.value = ''
+}
+
 function download() {
   // Plain navigation rather than an XHR: the endpoint streams the file
   // with Content-Disposition, and same-origin means the session cookie
   // rides along, so the browser handles it as a normal download.
-  const params = new URLSearchParams()
+  const params = new URLSearchParams(filterParams.value)
   if (activeFilter.value) params.set('status', activeFilter.value)
-  if (search.value.trim()) params.set('search', search.value.trim())
   const qs = params.toString()
   window.location.href = `/api/emails/export${qs ? '?' + qs : ''}`
 }
 
-watch(search, () => {
-  clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
+// One debounced reload for every filter input. Typing a date is
+// incremental (2026, 2026-0, 2026-08…), so firing per keystroke would
+// spam the API with half-formed values; the backend ignores unparseable
+// dates but there's no reason to ask it 12 times.
+watch([search, from, to], () => {
+  clearTimeout(filterTimer)
+  filterTimer = setTimeout(() => {
     page.value = 1
     fetchEmails()
     fetchStats()
@@ -148,13 +169,49 @@ onMounted(() => {
         </button>
       </div>
 
-      <div class="mt-4">
+      <div class="mt-4 space-y-3">
         <input
           v-model="search"
           type="search"
           placeholder="Search email address…"
           class="w-full rounded-md border border-[#c3c2b7] bg-[#fcfcfb] px-3 py-2.5 text-sm text-[#0b0b0b] focus:border-[#2a78d6] focus:outline-none focus:ring-1 focus:ring-[#2a78d6] dark:border-[#383835] dark:bg-[#1a1a19] dark:text-white"
         />
+
+        <!-- Stacked on mobile so each control keeps a full-width tap
+             target; side by side once there's room. -->
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label class="flex-1">
+            <span class="mb-1 block text-xs font-medium text-[#52514e] dark:text-[#c3c2b7]">Verified from</span>
+            <input
+              v-model="from"
+              type="datetime-local"
+              class="w-full rounded-md border border-[#c3c2b7] bg-[#fcfcfb] px-3 py-2.5 text-sm text-[#0b0b0b] focus:border-[#2a78d6] focus:outline-none focus:ring-1 focus:ring-[#2a78d6] dark:border-[#383835] dark:bg-[#1a1a19] dark:text-white"
+            />
+          </label>
+          <label class="flex-1">
+            <span class="mb-1 block text-xs font-medium text-[#52514e] dark:text-[#c3c2b7]">Verified to</span>
+            <input
+              v-model="to"
+              type="datetime-local"
+              class="w-full rounded-md border border-[#c3c2b7] bg-[#fcfcfb] px-3 py-2.5 text-sm text-[#0b0b0b] focus:border-[#2a78d6] focus:outline-none focus:ring-1 focus:ring-[#2a78d6] dark:border-[#383835] dark:bg-[#1a1a19] dark:text-white"
+            />
+          </label>
+          <button
+            v-if="dateRangeActive"
+            class="rounded-md border border-[#c3c2b7] px-3 py-2.5 text-sm font-medium text-[#52514e] hover:bg-[#f0efec] dark:border-[#383835] dark:text-[#c3c2b7] dark:hover:bg-[#2c2c2a]"
+            @click="clearDates"
+          >
+            Clear dates
+          </button>
+        </div>
+
+        <!-- Pending rows have no verification time yet, so a date range
+             necessarily excludes them. Say so rather than let the Pending
+             card silently read 0 and look like data went missing. -->
+        <p v-if="dateRangeActive" class="text-xs text-[#898781]">
+          Date range filters on when each address was verified, so
+          still-pending addresses are excluded while it's active.
+        </p>
       </div>
 
       <p v-if="error" class="mt-4 text-sm text-[#d03b3b]">{{ error }}</p>

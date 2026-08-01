@@ -39,7 +39,54 @@ class EmailController extends Controller
             $query->where('emails.email', 'like', '%'.$search.'%');
         }
 
+        // Date range applies to WHEN THE ADDRESS WAS VERIFIED, which is
+        // the question this filter is actually asked for ("what did we
+        // verify between X and Y"). Consequence worth knowing: rows not
+        // yet processed have a null processed_at, so any date range
+        // necessarily excludes still-pending addresses — the UI labels
+        // the inputs "Verified from/to" so that reads as intended rather
+        // than as missing data.
+        if ($from = $this->parseDate($request->query('from'))) {
+            $query->where('verification_jobs.processed_at', '>=', $from);
+        }
+
+        if ($to = $this->parseDate($request->query('to'), endOfDay: true)) {
+            $query->where('verification_jobs.processed_at', '<=', $to);
+        }
+
         return $query;
+    }
+
+    /**
+     * Accepts either a plain date (2026-08-01) or a datetime-local value
+     * (2026-08-01T14:30). A bare date used as the upper bound is widened
+     * to the end of that day, so "to: 2026-08-01" includes everything
+     * verified on the 1st rather than only the midnight instant — which
+     * is what a person picking a single day means.
+     *
+     * Unparseable input is ignored rather than fatal: a half-typed date
+     * shouldn't 500 the page while someone is still filling the field.
+     */
+    private function parseDate(?string $value, bool $endOfDay = false): ?string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        try {
+            $date = \Illuminate\Support\Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $isDateOnly = preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1;
+
+        if ($endOfDay && $isDateOnly) {
+            $date = $date->endOfDay();
+        }
+
+        return $date->toDateTimeString();
     }
 
     private function applyGroupFilter(BuilderContract $query, ?string $group): BuilderContract
@@ -125,7 +172,20 @@ class EmailController extends Controller
                 'verification_jobs.processed_at',
             ]);
 
-        $filename = sprintf('emails-%s-%s.csv', $group ?: 'all', now()->format('Ymd-His'));
+        // Encode the active filters into the filename so a folder of
+        // exports stays self-describing — otherwise several downloads
+        // taken minutes apart are indistinguishable once they're sitting
+        // in Downloads.
+        $parts = ['emails', $group ?: 'all'];
+        if ($from = $this->parseDate($request->query('from'))) {
+            $parts[] = 'from'.\Illuminate\Support\Carbon::parse($from)->format('Ymd');
+        }
+        if ($to = $this->parseDate($request->query('to'), endOfDay: true)) {
+            $parts[] = 'to'.\Illuminate\Support\Carbon::parse($to)->format('Ymd');
+        }
+        $parts[] = now()->format('Ymd-His');
+
+        $filename = implode('-', $parts).'.csv';
 
         return response()->streamDownload(function () use ($query) {
             $out = fopen('php://output', 'wb');
