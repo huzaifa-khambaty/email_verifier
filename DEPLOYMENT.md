@@ -8,8 +8,11 @@ Vue 3 + MariaDB + Nginx + Supervisor, deployed via GitHub Actions.
 
 ## How it works
 
-Every push to `main` that passes `.github/workflows/ci.yml`'s tests
-triggers `.github/workflows/deploy.yml`:
+`main` is regular development — PRs into it run `.github/workflows/ci.yml`
+for fast feedback, nothing deploys. When you're ready to ship, merge (or
+push) `main` into the `production` branch; that push triggers
+`.github/workflows/deploy.yml`, which re-runs the same tests as a gate
+and then:
 
 1. Builds the backend (`composer install --no-dev`) and frontend
    (`npm run build`) **in CI**, not on the VPS — the server never needs
@@ -162,7 +165,7 @@ In the GitHub repo → Settings → Secrets and variables → Actions, add:
 
 ### 9. First deploy
 
-Push to `main` (or re-run the workflow). `remote-deploy.sh` will refuse
+Push to `production` (or re-run the workflow). `remote-deploy.sh` will refuse
 to run if `shared/backend/.env` is missing (step 4), so do that first.
 After the first successful deploy, generate the app key and seed the
 admin account **on the server**, once:

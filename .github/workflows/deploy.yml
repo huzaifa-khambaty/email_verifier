@@ -2,12 +2,12 @@ name: Deploy
 
 # v2 §11: "GitHub Actions deploys automatically... No manual production
 # edits after CI/CD." Single production environment (see DECISIONS.md
-# "Deployment" — no staging environment for v1). Every push to main that
-# passes tests is built and deployed; there is no separate approval step,
-# so treat main as the thing that's always safe to ship.
+# "Deployment"). `main` is regular development; pushing/merging into
+# `production` is the deploy trigger — that merge IS the release gate,
+# so there's no separate approval step beyond it.
 on:
   push:
-    branches: [main]
+    branches: [production]
 
 concurrency:
   group: deploy-production

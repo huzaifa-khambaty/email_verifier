@@ -1,12 +1,13 @@
 name: CI
 
-# Runs on every PR into main for fast feedback. deploy.yml also calls
-# this workflow (via `workflow_call`) as its test gate before touching
-# production, so there's exactly one copy of these steps, not two
-# drifting in parallel.
+# Runs on every PR into main (regular development) or production (the
+# main -> production promotion) for fast feedback. deploy.yml also calls
+# this workflow (via `workflow_call`) as its test gate before an actual
+# deploy, so there's exactly one copy of these steps, not two drifting in
+# parallel.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, production]
   workflow_call:
 
 jobs:

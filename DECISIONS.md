@@ -252,9 +252,11 @@ Still applies at 6.5M-record scale, arguably more so:
 **Implemented** — `.github/workflows/{ci,deploy}.yml`, `deploy/`,
 `DEPLOYMENT.md`.
 
-- **No staging environment.** Single production environment on the
-  Ubuntu VPS. Every push to `main` that passes CI deploys — there's no
-  separate approval gate, so `main` is treated as always-shippable.
+- **No staging environment, but a deploy branch.** Single production
+  environment on the Ubuntu VPS. `main` is regular development (PRs
+  trigger `ci.yml`); pushing/merging into `production` triggers
+  `deploy.yml`. That merge is itself the release gate — no separate
+  approval step beyond it.
 - **Migrations run automatically** on every deploy, via
   `php artisan migrate --force` in `remote-deploy.sh`. No manual DB
   changes in production (v2 §11 "No manual production edits after
