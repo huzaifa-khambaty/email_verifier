@@ -29,8 +29,14 @@ class DashboardController extends Controller
             ->where('processed_at', '>=', now()->subMinutes(5))
             ->count();
 
+        // Counts workers that are ALIVE, not just mid-job. A worker with
+        // nothing to claim sets itself to IDLE (see WorkCommand), so
+        // filtering on RUNNING alone reported "Active workers: 0" while
+        // all ten were up and heartbeating — which reads as "the system
+        // is dead" rather than "the queue is empty". The heartbeat
+        // recency check is what actually distinguishes alive from gone.
         $activeWorkers = WorkerStatus::query()
-            ->where('status', 'RUNNING')
+            ->whereIn('status', ['RUNNING', 'IDLE'])
             ->where('last_heartbeat_at', '>=', now()->subMinutes(2))
             ->count();
 
