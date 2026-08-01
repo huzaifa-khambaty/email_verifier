@@ -12,6 +12,9 @@ class Domain extends Model
 
     protected $fillable = [
         'name',
+        'is_catch_all',
+        'catch_all_detections',
+        'catch_all_confirmed_at',
         'priority',
         'delay_seconds',
         'max_workers',
@@ -24,6 +27,8 @@ class Domain extends Model
     protected function casts(): array
     {
         return [
+            'is_catch_all' => 'boolean',
+            'catch_all_confirmed_at' => 'datetime',
             'last_dispatched_at' => 'datetime',
             'cooling_down_until' => 'datetime',
         ];

@@ -35,6 +35,14 @@ return [
         'circuit_breaker_cooldown_minutes' => (int) env('VERIFY_CIRCUIT_BREAKER_COOLDOWN_MINUTES', 30),
         'claim_batch_size' => (int) env('VERIFY_CLAIM_BATCH_SIZE', 10),
 
+        // Consecutive catch-all confirmations before a domain is trusted
+        // as catch-all and its remaining addresses are resolved without
+        // an SMTP round trip. More than one because a server having a bad
+        // day can transiently accept everything; three consecutive
+        // random-probe accepts is strong evidence, and any single
+        // definitive VALID/INVALID resets the count to zero.
+        'catch_all_confirmations' => (int) env('VERIFY_CATCH_ALL_CONFIRMATIONS', 3),
+
         // Domains seeded with the stricter major_provider_delay_seconds /
         // max_workers=1 defaults instead of the general defaults — see
         // DECISIONS.md "Stricter defaults for major providers".

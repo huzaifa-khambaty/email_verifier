@@ -175,7 +175,101 @@ class VerificationScheduler
                 $updates['consecutive_failures'] = 0;
             }
 
+            // Captured BEFORE the update, because update() mutates the
+            // in-memory model too — reading the flag afterwards would
+            // always report "already catch-all" and the drain below
+            // would never fire.
+            $wasAlreadyCatchAll = $domain->is_catch_all;
+
+            $this->trackCatchAll($domain, $result->status, $updates);
+
             $domain->update($updates);
+
+            // Draining the backlog runs once, on the transition to
+            // confirmed, rather than on every subsequent result — it
+            // touches every pending row for the domain.
+            if (($updates['is_catch_all'] ?? false) && ! $wasAlreadyCatchAll) {
+                $this->resolvePendingForCatchAllDomain($domain->id);
+            }
         });
+    }
+
+    /**
+     * Accumulates evidence about whether a domain accepts every
+     * recipient, mutating $updates in place.
+     *
+     * A CATCH_ALL result means our random-probe address was accepted, so
+     * that's a confirmation. A VALID or INVALID result is proof of the
+     * opposite — the server distinguished a real mailbox from a fake one
+     * — so it wipes the count and clears any existing flag. That reset is
+     * what stops a transient "accepting everything during an outage"
+     * blip from permanently mislabelling a domain. Inconclusive outcomes
+     * (TEMP_FAILURE, NO_MX, UNKNOWN) are ignored either way.
+     */
+    private function trackCatchAll(Domain $domain, string $status, array &$updates): void
+    {
+        if ($status === 'CATCH_ALL') {
+            if ($domain->is_catch_all) {
+                return; // already settled, nothing to prove
+            }
+
+            $confirmations = $domain->catch_all_detections + 1;
+            $updates['catch_all_detections'] = $confirmations;
+
+            if ($confirmations >= ($this->config['catch_all_confirmations'] ?? 3)) {
+                $updates['is_catch_all'] = true;
+                $updates['catch_all_confirmed_at'] = Carbon::now();
+            }
+
+            return;
+        }
+
+        if (in_array($status, ['VALID', 'INVALID'], true)) {
+            $updates['catch_all_detections'] = 0;
+
+            if ($domain->is_catch_all) {
+                $updates['is_catch_all'] = false;
+                $updates['catch_all_confirmed_at'] = null;
+            }
+        }
+    }
+
+    /**
+     * Marks every still-pending address on a confirmed catch-all domain
+     * without opening a connection for each one.
+     *
+     * This is the whole point of the feature: on the sample data,
+     * yahoo.com was 419/419 catch-all, and at 6.5M scale that pattern
+     * represents millions of SMTP conversations that can only ever
+     * return the same answer. Chunked rather than one statement so a
+     * domain with millions of rows doesn't hold a single enormous lock.
+     */
+    public function resolvePendingForCatchAllDomain(int $domainId): int
+    {
+        $resolved = 0;
+
+        do {
+            $ids = DB::table('verification_jobs')
+                ->join('emails', 'emails.id', '=', 'verification_jobs.email_id')
+                ->where('emails.domain_id', $domainId)
+                ->where('verification_jobs.status', 'PENDING')
+                ->limit(5000)
+                ->pluck('verification_jobs.id');
+
+            if ($ids->isEmpty()) {
+                break;
+            }
+
+            $resolved += DB::table('verification_jobs')
+                ->whereIn('id', $ids)
+                ->update([
+                    'status' => 'CATCH_ALL',
+                    'smtp_response' => 'Domain confirmed catch-all; resolved without an individual SMTP check.',
+                    'processed_at' => Carbon::now(),
+                    'updated_at' => Carbon::now(),
+                ]);
+        } while ($ids->count() === 5000);
+
+        return $resolved;
     }
 }

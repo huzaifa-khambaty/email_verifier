@@ -5,6 +5,7 @@ namespace App\Console\Commands\Verify;
 use App\Models\Domain;
 use App\Models\WorkerStatus;
 use App\Services\Verification\SmtpEmailVerifier;
+use App\Services\Verification\VerificationResult;
 use App\Services\Verification\VerificationScheduler;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -73,7 +74,21 @@ class WorkCommand extends Command
                 }
 
                 $email = $job->email;
-                $result = $verifier->verify($email->email, $email->domain->name);
+
+                // Safety net for addresses imported after a domain was
+                // already confirmed catch-all. The bulk resolver handles
+                // the backlog at confirmation time, but anything arriving
+                // later would otherwise pay for an SMTP round trip whose
+                // answer is already known.
+                $result = $email->domain->is_catch_all
+                    ? new VerificationResult(
+                        'CATCH_ALL',
+                        null,
+                        'Domain confirmed catch-all; resolved without an individual SMTP check.',
+                        null,
+                    )
+                    : $verifier->verify($email->email, $email->domain->name);
+
                 $scheduler->recordResult($job, $result);
 
                 $processed++;
