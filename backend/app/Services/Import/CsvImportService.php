@@ -124,7 +124,15 @@ class CsvImportService
     {
         $byName = [];
         foreach ($header as $index => $name) {
-            $byName[strtolower(trim((string) $name))] = $index;
+            $name = (string) $name;
+            if ($index === 0) {
+                // Excel/Windows tools commonly prepend a UTF-8 BOM to
+                // exported CSVs, which would otherwise silently break
+                // matching the first column's name (e.g. "Email" reads
+                // as "\u{FEFF}Email" and never matches).
+                $name = preg_replace('/^\x{FEFF}/u', '', $name) ?? $name;
+            }
+            $byName[strtolower(trim($name))] = $index;
         }
 
         $map = [];
