@@ -3,54 +3,54 @@
 # Not meant to be run by hand except for manual recovery — see
 # ../DEPLOYMENT.md "Manual deploy / rollback".
 #
-# Zero-downtime release layout (Capistrano-style):
+# Flat layout — each deploy overwrites in place, no release history:
 #   /var/www/email-verifier/
-#     releases/<git-sha>/backend/      composer install already run in CI
-#     releases/<git-sha>/frontend/dist/  npm run build already run in CI
-#     shared/backend/.env               persists across releases, never in git
-#     shared/backend/storage/           persists across releases (uploads, logs)
-#     current -> releases/<git-sha>     atomic symlink, what Nginx/PHP-FPM serve
+#     backend/    Laravel app; .env and storage/ are preserved across
+#                 deploys (excluded from the sync), everything else is
+#                 overwritten
+#     frontend/   built Vite output, fully stateless, fully overwritten
 set -euo pipefail
 
 RELEASE_FILE="$1"
-SHA="$2"
+SHA="${2:-unknown}"
 APP_DIR="/var/www/email-verifier"
-RELEASE_DIR="$APP_DIR/releases/$SHA"
-KEEP_RELEASES=3
+EXTRACT_DIR="$APP_DIR/incoming/extracted"
 
-if [ ! -f "$APP_DIR/shared/backend/.env" ]; then
-  echo "Missing $APP_DIR/shared/backend/.env — one-time server setup isn't done yet." >&2
+if [ ! -f "$APP_DIR/backend/.env" ]; then
+  echo "Missing $APP_DIR/backend/.env — one-time server setup isn't done yet." >&2
   echo "See DEPLOYMENT.md 'One-time VPS setup'." >&2
   exit 1
 fi
 
-echo "==> Extracting $RELEASE_FILE to $RELEASE_DIR"
-mkdir -p "$RELEASE_DIR"
-tar -xzf "$APP_DIR/incoming/$RELEASE_FILE" -C "$RELEASE_DIR"
+echo "==> Extracting $RELEASE_FILE"
+rm -rf "$EXTRACT_DIR"
+mkdir -p "$EXTRACT_DIR"
+tar -xzf "$APP_DIR/incoming/$RELEASE_FILE" -C "$EXTRACT_DIR"
 
-echo "==> Linking shared resources"
-ln -sfn "$APP_DIR/shared/backend/.env" "$RELEASE_DIR/backend/.env"
-rm -rf "$RELEASE_DIR/backend/storage"
-ln -sfn "$APP_DIR/shared/backend/storage" "$RELEASE_DIR/backend/storage"
+echo "==> Syncing backend/ (preserving .env and storage/)"
+mkdir -p "$APP_DIR/backend"
+rsync -a --delete \
+  --exclude='.env' \
+  --exclude='storage/' \
+  "$EXTRACT_DIR/backend/" "$APP_DIR/backend/"
 
-echo "==> Running migrations and caching config"
-cd "$RELEASE_DIR/backend"
+echo "==> Syncing frontend/"
+mkdir -p "$APP_DIR/frontend/dist"
+rsync -a --delete "$EXTRACT_DIR/frontend/dist/" "$APP_DIR/frontend/dist/"
+
+echo "==> Running migrations, seeding, and caching config"
+cd "$APP_DIR/backend"
 php artisan migrate --force
+php artisan db:seed --force
 php artisan config:cache
 php artisan route:cache
 php artisan event:cache
-
-echo "==> Swapping current -> $SHA"
-ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
 
 echo "==> Reloading PHP-FPM and restarting workers"
 sudo /usr/bin/systemctl reload php8.3-fpm
 sudo /usr/bin/supervisorctl restart email-verifier:*
 
-echo "==> Pruning old releases (keeping last $KEEP_RELEASES)"
-cd "$APP_DIR/releases"
-ls -1t | tail -n "+$((KEEP_RELEASES + 1))" | xargs -r rm -rf
-
+rm -rf "$EXTRACT_DIR"
 rm -f "$APP_DIR/incoming/$RELEASE_FILE" "$APP_DIR/incoming/remote-deploy.sh"
 
 echo "==> Deployed $SHA"

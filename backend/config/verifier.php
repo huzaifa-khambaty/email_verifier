@@ -5,6 +5,18 @@
 // only the fallback used when creating a new domain row.
 
 return [
+    // Read via config('verifier.admin.*'), never env() directly, from the
+    // seeder — env() becomes unreliable once `config:cache` has run (only
+    // config files are guaranteed to still see real .env values at cache
+    // time), and remote-deploy.sh caches config before seeding. Calling
+    // env('ADMIN_EMAIL') straight from DatabaseSeeder silently fell back
+    // to its hardcoded default in production. See DECISIONS.md.
+    'admin' => [
+        'name' => env('ADMIN_NAME', 'Admin'),
+        'email' => env('ADMIN_EMAIL', 'admin@nextmatchmail.com'),
+        'password' => env('ADMIN_PASSWORD', 'password'),
+    ],
+
     'smtp' => [
         'helo_domain' => env('SMTP_HELO_DOMAIN', 'verify.nextmatchmail.com'),
         'mail_from' => env('SMTP_MAIL_FROM', 'verify@nextmatchmail.com'),

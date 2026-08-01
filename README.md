@@ -64,7 +64,7 @@ npm run dev
 - Domain: `nextmatchmail.com`, with `verify.nextmatchmail.com` confirmed
   propagating (used as SMTP HELO/MAIL FROM identity — see `DECISIONS.md`)
 - VPS: Ubuntu 24.04
-- Deployment: GitHub Actions → VPS, zero-downtime symlink swap — see
+- Deployment: GitHub Actions → VPS, flat overwrite-in-place — see
   [`DEPLOYMENT.md`](DEPLOYMENT.md) for one-time server setup and how
   deploys work day to day. `legacy-v1/DEPLOYMENT.md`'s general VPS
   hardening (non-root user, ufw, PTR/reverse-DNS for outbound SMTP

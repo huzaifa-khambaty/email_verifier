@@ -13,19 +13,27 @@ class DatabaseSeeder extends Seeder
 
     /**
      * Single-tenant app (DECISIONS.md "Auth & users"): no public
-     * registration, exactly one admin account, seeded from env rather
-     * than hardcoded. Idempotent — safe to re-run (e.g. to rotate the
-     * password by changing ADMIN_PASSWORD and re-seeding).
+     * registration, exactly one admin account, seeded from config rather
+     * than hardcoded (config, not env() directly — see config/verifier.php
+     * for why). Idempotent, and updates the one existing admin in place
+     * even if its email is changing, rather than matching on email and
+     * risking an orphaned duplicate if that's what actually changed.
      */
     public function run(): void
     {
-        User::updateOrCreate(
-            ['email' => env('ADMIN_EMAIL', 'admin@nextmatchmail.com')],
-            [
-                'name' => env('ADMIN_NAME', 'Admin'),
-                'password' => Hash::make(env('ADMIN_PASSWORD', 'password')),
-                'email_verified_at' => now(),
-            ]
-        );
+        $attributes = [
+            'name' => config('verifier.admin.name'),
+            'email' => config('verifier.admin.email'),
+            'password' => Hash::make(config('verifier.admin.password')),
+            'email_verified_at' => now(),
+        ];
+
+        $admin = User::first();
+
+        if ($admin) {
+            $admin->update($attributes);
+        } else {
+            User::create($attributes);
+        }
     }
 }

@@ -261,19 +261,31 @@ Still applies at 6.5M-record scale, arguably more so:
   `php artisan migrate --force` in `remote-deploy.sh`. No manual DB
   changes in production (v2 §11 "No manual production edits after
   CI/CD").
-- **Zero-downtime via atomic symlink swap** (Capistrano-style
-  `releases/<sha>/` + `shared/` + `current` symlink), not an in-place
-  overwrite. Backend (`composer install --no-dev`) and frontend
-  (`npm run build`) are both built **in CI**, not on the VPS — the
-  server needs PHP, Nginx, MariaDB, and Supervisor, but never Composer or
-  Node.
-- **Secrets never flow through CI.** `shared/backend/.env` lives on the
-  VPS permanently, set up once by hand, and is symlinked into every new
-  release. GitHub Actions only holds SSH connection secrets
+- **Flat overwrite-in-place, not release history.** Originally built as
+  a Capistrano-style `releases/<sha>/` + `shared/` + `current` symlink
+  setup for zero-downtime atomic swaps; simplified on request to a flat
+  `/var/www/email-verifier/{backend,frontend}/` layout that
+  `remote-deploy.sh` `rsync`s into directly (excluding `.env` and
+  `storage/` so they persist). No release history, no symlink — this
+  project's scale doesn't need the extra moving parts, and rollback is
+  "redeploy an older commit" rather than "relink a symlink." Backend
+  (`composer install --no-dev`) and frontend (`npm run build`) are still
+  both built **in CI**, not on the VPS — the server needs PHP, Nginx,
+  MariaDB, and Supervisor, but never Composer or Node.
+- **Secrets never flow through CI.** `/var/www/email-verifier/backend/.env`
+  lives on the VPS permanently, set up once by hand and excluded from
+  every sync. GitHub Actions only holds SSH connection secrets
   (`DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PORT`/`DEPLOY_SSH_KEY`), never
   application secrets.
-- **Rollback** is re-pointing the `current` symlink to a previous
-  release and restarting workers — no rebuild required (see
+- **Admin account seeding runs on every deploy** (`db:seed`, idempotent —
+  updates the one existing admin in place). Its credentials are read via
+  `config('verifier.admin.*')`, never `env()` directly from the seeder —
+  `env()` becomes unreliable once `config:cache` has run (which
+  `remote-deploy.sh` does on every deploy, before seeding), and a
+  seeder calling `env()` straight silently fell back to hardcoded
+  defaults in production. Found live during the first real deploy.
+- **Rollback** is redeploying an older commit (push/revert on
+  `production`) — no separate release history to fall back to (see
   `DEPLOYMENT.md` "Manual deploy / rollback").
 
 ---

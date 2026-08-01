@@ -20,15 +20,19 @@ and then:
    Supervisor.
 2. Packages both into a tarball, `scp`s it to the VPS along with
    `deploy/remote-deploy.sh`.
-3. That script extracts it to `releases/<git-sha>/`, symlinks in the
-   persistent `.env` and `storage/` from `shared/`, runs
-   `php artisan migrate --force` + config caching, atomically swaps the
-   `current` symlink, reloads PHP-FPM, and restarts the Supervisor-managed
-   workers so they pick up the new code.
+3. That script extracts it and `rsync`s it into place at
+   `/var/www/email-verifier/backend/` and `/var/www/email-verifier/frontend/`
+   — **overwriting in place**, no release history or symlink swap (kept
+   deliberately simple; there's no need for zero-downtime versioning at
+   this project's scale). `.env` and `storage/` are excluded from the
+   sync so they persist across deploys. Then it runs
+   `php artisan migrate --force`, seeds/updates the admin account, caches
+   config, and restarts PHP-FPM + the Supervisor-managed workers so they
+   pick up the new code.
 
 No manual production edits after this is set up (v2 §11) — config
-changes go through `shared/backend/.env` on the server (see below), code
-changes go through git.
+changes go through `/var/www/email-verifier/backend/.env` on the server
+(see below), code changes go through git.
 
 ## One-time VPS setup
 
@@ -60,16 +64,19 @@ FLUSH PRIVILEGES;
 ### 3. Directory layout
 
 ```bash
-sudo mkdir -p /var/www/email-verifier/{releases,incoming,shared/backend/storage}
+sudo mkdir -p /var/www/email-verifier/{backend,frontend/dist,incoming}
 sudo chown -R deploy:deploy /var/www/email-verifier
 ```
 
 Recreate the Laravel storage subdirectories (they're gitignored, so the
-release tarball won't contain them):
+release tarball won't contain them, and `remote-deploy.sh` excludes
+`storage/` from every sync so this only needs doing once):
 
 ```bash
-cd /var/www/email-verifier/shared/backend/storage
-mkdir -p app/private app/public framework/{cache/data,sessions,testing,views} logs
+cd /var/www/email-verifier/backend
+mkdir -p storage/app/private storage/app/public \
+  storage/framework/cache/data storage/framework/sessions \
+  storage/framework/testing storage/framework/views storage/logs
 ```
 
 **Ownership matters here and is easy to get wrong**: PHP-FPM runs as
@@ -79,24 +86,29 @@ will fail to write logs (a 500 with "Permission denied" opening
 is actually writable by `www-data`. Fix it with:
 
 ```bash
-sudo chown -R www-data:deploy /var/www/email-verifier/shared/backend/storage
-sudo find /var/www/email-verifier/shared/backend/storage -type d -exec chmod 2775 {} \;
-sudo find /var/www/email-verifier/shared/backend/storage -type f -exec chmod 664 {} \;
+sudo chown -R www-data:deploy /var/www/email-verifier/backend/storage
+sudo find /var/www/email-verifier/backend/storage -type d -exec chmod 2775 {} \;
+sudo find /var/www/email-verifier/backend/storage -type f -exec chmod 664 {} \;
 ```
 
 (`2775` sets the setgid bit so new files/directories PHP-FPM creates
 keep inheriting the `deploy` group, so `deploy` can still read/manage
-logs without needing `sudo`.)
+logs without needing `sudo`. Note this only controls the *group*
+permission bit on freshly created files — PHP-FPM's own umask still
+governs whether that group-write bit is actually set on a brand new
+file, so don't be surprised if a fresh `laravel.log` needs the `chmod
+2775`/`664` pass repeated occasionally; nothing to worry about, just
+re-run the two `find` commands above.)
 
 ### 4. Production `.env`
 
 This is the one thing that's genuinely manual — CI never sees it, by
 design (see `DECISIONS.md` "Auth & users" for why secrets don't flow
 through GitHub Actions here). Create
-`/var/www/email-verifier/shared/backend/.env`:
+`/var/www/email-verifier/backend/.env`:
 
 ```bash
-nano /var/www/email-verifier/shared/backend/.env
+nano /var/www/email-verifier/backend/.env
 ```
 
 Base it on `backend/.env.example`, then set at minimum:
@@ -122,6 +134,15 @@ SMTP_MAIL_FROM=verify@nextmatchmail.com
 ADMIN_EMAIL=huzaifa.khambaty@gmail.com
 ADMIN_PASSWORD=CHANGE_ME_STRONG_PASSWORD
 ```
+
+`ADMIN_EMAIL`/`ADMIN_PASSWORD` are read via `config('verifier.admin.*')`
+(see `config/verifier.php`), not `env()` directly — `remote-deploy.sh`
+runs `config:cache` as part of every deploy, and calling `env()` outside
+a config file becomes unreliable once config is cached. `db:seed` runs
+automatically on every deploy and is idempotent (updates the one
+existing admin in place), so rotating the password later is just:
+change `ADMIN_PASSWORD` here and push to `production` again — no manual
+SSH step needed.
 
 ### 5. Passwordless sudo for the deploy user (scoped, not full sudo)
 
@@ -157,9 +178,10 @@ sudo supervisorctl reread
 sudo supervisorctl update
 ```
 
-(Supervisor programs won't start successfully until the first release
-exists at `current/` — that's fine, `autorestart=true` means they'll
-come up on their own once step 8 finishes.)
+(Supervisor programs won't start successfully until the first deploy has
+put real code at `/var/www/email-verifier/backend/` — that's fine,
+`autorestart=true` means they'll come up on their own once step 9
+finishes.)
 
 ### 7. DNS + TLS
 
@@ -190,37 +212,35 @@ In the GitHub repo → Settings → Secrets and variables → Actions, add:
 
 ### 9. First deploy
 
-Push to `production` (or re-run the workflow). `remote-deploy.sh` will refuse
-to run if `shared/backend/.env` is missing (step 4), so do that first.
-After the first successful deploy, generate the app key and seed the
-admin account **on the server**, once:
+Push to `production` (or re-run the workflow). `remote-deploy.sh` will
+refuse to run if `backend/.env` is missing (step 4), so do that first.
+After the first successful deploy, generate the app key **on the
+server** (the only step `db:seed` running automatically doesn't cover,
+since a key has to exist before anything using encryption/sessions can
+work at all):
 
 ```bash
-cd /var/www/email-verifier/current/backend
-php artisan key:generate   # writes APP_KEY into shared/backend/.env via the symlink
-php artisan db:seed
+cd /var/www/email-verifier/backend
+php artisan key:generate   # writes APP_KEY into backend/.env
 ```
+
+Then redeploy (push to `production` again, or re-run
+`remote-deploy.sh` by hand) so the app actually picks up the new key.
 
 ## Manual deploy / rollback
 
 Re-run `remote-deploy.sh` by hand if needed — it takes the tarball
 filename (already sitting in `incoming/` from the last CI run, or
-uploaded manually) and the SHA to release under:
+uploaded manually) and a label for the log line:
 
 ```bash
 bash /var/www/email-verifier/incoming/remote-deploy.sh release-<sha>.tar.gz <sha>
 ```
 
-**Rollback** is just re-pointing the symlink to a previous release and
-restarting workers — no rebuild needed:
-
-```bash
-ls /var/www/email-verifier/releases/            # find the SHA to roll back to
-ln -sfn /var/www/email-verifier/releases/<old-sha> /var/www/email-verifier/current
-sudo systemctl reload php8.3-fpm
-sudo supervisorctl restart email-verifier:*
-```
-
-(If the rollback needs to undo a migration too, that's not automatic —
-run `php artisan migrate:rollback` from the old release manually, and
-think carefully about whether that's actually safe for that migration.)
+**Rollback**: there's no release history to fall back to (deliberately —
+see "How it works" above). To roll back, push an older commit to
+`production` (`git revert` the bad commit, or force-push production back
+to a known-good SHA) and let the pipeline redeploy it normally. If the
+bad deploy included a migration, check whether
+`php artisan migrate:rollback` is actually safe for it before running
+that by hand on the server.
