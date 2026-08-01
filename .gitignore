@@ -1,0 +1,24 @@
+# Root-level ignores for the monorepo. backend/ and frontend/ each have
+# their own .gitignore (scaffolded by Laravel/Vite) that's more specific
+# to their tooling — this file only covers things at the repo root and a
+# safety net for secrets that should never land in any subfolder.
+
+# Composer bootstrap binary — not project source, downloaded fresh by
+# DEPLOYMENT.md's setup steps rather than committed.
+/composer.phar
+
+# Safety net: never commit an actual .env from anywhere in the tree, only
+# .env.example files. backend/.gitignore already covers backend/.env
+# specifically; this catches any stray copy elsewhere.
+**/.env
+!**/.env.example
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch/test artifacts that sometimes get created alongside a
+# quick manual test (e.g. a throwaway CSV) — never intentional to commit.
+*.local.csv
