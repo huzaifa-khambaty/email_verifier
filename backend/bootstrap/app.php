@@ -1,8 +1,10 @@
 <?php
 
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\JsonResponse;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -18,5 +20,14 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->statefulApi();
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // v2 §2/§9: "Backend returns JSON only" — there is no web login
+        // page to redirect to. Without this, Laravel's default auth
+        // middleware only returns JSON when the request's Accept header
+        // says so; anything else (a bare curl, a bot, visiting the URL
+        // directly) hits `route('login')`, which doesn't exist, and
+        // crashes into a 500 instead of a clean 401. Found live in
+        // production — see DECISIONS.md.
+        $exceptions->render(function (AuthenticationException $e, $request): JsonResponse {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        });
     })->create();
