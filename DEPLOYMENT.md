@@ -65,12 +65,28 @@ sudo chown -R deploy:deploy /var/www/email-verifier
 ```
 
 Recreate the Laravel storage subdirectories (they're gitignored, so the
-release tarball won't contain them) and give them the right permissions:
+release tarball won't contain them):
 
 ```bash
 cd /var/www/email-verifier/shared/backend/storage
 mkdir -p app/private app/public framework/{cache/data,sessions,testing,views} logs
 ```
+
+**Ownership matters here and is easy to get wrong**: PHP-FPM runs as
+`www-data`, but everything above was just created as `deploy` — Laravel
+will fail to write logs (a 500 with "Permission denied" opening
+`storage/logs/laravel.log", found live in production) until `storage/`
+is actually writable by `www-data`. Fix it with:
+
+```bash
+sudo chown -R www-data:deploy /var/www/email-verifier/shared/backend/storage
+sudo find /var/www/email-verifier/shared/backend/storage -type d -exec chmod 2775 {} \;
+sudo find /var/www/email-verifier/shared/backend/storage -type f -exec chmod 664 {} \;
+```
+
+(`2775` sets the setgid bit so new files/directories PHP-FPM creates
+keep inheriting the `deploy` group, so `deploy` can still read/manage
+logs without needing `sudo`.)
 
 ### 4. Production `.env`
 
