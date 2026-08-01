@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\EmailController;
 use App\Http\Controllers\Api\ImportBatchController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -28,6 +29,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::get('/dashboard', [DashboardController::class, 'index']);
+
+    // Export before the paginated list is irrelevant to routing order
+    // here (distinct paths), but keep /stats and /export above any
+    // future /emails/{email} route so they aren't captured as an id.
+    Route::get('/emails', [EmailController::class, 'index']);
+    Route::get('/emails/stats', [EmailController::class, 'stats']);
+    Route::get('/emails/export', [EmailController::class, 'export']);
 
     Route::get('/import-batches', [ImportBatchController::class, 'index']);
     Route::post('/import-batches', [ImportBatchController::class, 'store']);
