@@ -117,8 +117,17 @@ sudo visudo -f /etc/sudoers.d/email-verifier-deploy
 ```
 
 ```
-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.3-fpm, /usr/bin/supervisorctl restart email-verifier:*
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.3-fpm, /usr/bin/supervisorctl restart email-verifier\:*
 ```
+
+Note the escaped `\:` before the `*` — sudoers treats a bare `:` in a command
+argument as a syntax token, not a literal character (confirmed against sudo
+1.9.15p5; a bare `email-verifier:*` fails with a parser error pointing at the
+colon, not the asterisk, despite how that reads). The `*` itself is left
+unescaped — it stays a real wildcard, needed since `remote-deploy.sh` invokes
+this normally (`sudo supervisorctl restart email-verifier:*`, no backslash) and
+that literal argument still has to match the pattern stored here. Validate
+with `sudo visudo -cf /etc/sudoers.d/email-verifier-deploy` after editing.
 
 ### 6. Nginx + Supervisor config
 
