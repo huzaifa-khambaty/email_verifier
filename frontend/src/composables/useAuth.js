@@ -14,8 +14,12 @@ export function useAuth() {
 
   async function fetchUser() {
     try {
+      // /api/user answers 200 with {"user": null} when there's no
+      // session (see routes/api.php) — that's a normal answer, not an
+      // error. The catch is only for genuine failures (network down,
+      // 5xx), which should also leave us unauthenticated.
       const { data } = await api.get('/user')
-      user.value = data
+      user.value = data?.user ?? null
     } catch {
       user.value = null
     } finally {

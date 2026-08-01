@@ -10,8 +10,21 @@ use Illuminate\Support\Facades\Route;
 // "Auth & users". No public registration endpoint.
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 
+// Session probe, deliberately NOT behind auth:sanctum. The SPA's router
+// guard calls this on first navigation to answer "is there an existing
+// session?", and "no" is a normal answer to that question, not an error.
+// Behind auth:sanctum it answered 401, which browsers log to the console
+// as a failed request even though the app handles it correctly — noise
+// that reads like a real bug on the login page. It only ever exposes the
+// caller's own record.
+//
+// The {"user": ...} envelope is deliberate: `response()->json(null)`
+// serializes to `{}`, which is TRUTHY in JS, so a bare body would make
+// the frontend read "no session" as "logged in" and wave guests past the
+// router guard. An explicit null-able key can't be misread that way.
+Route::get('/user', fn (Request $request) => response()->json(['user' => $request->user()]));
+
 Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/user', fn (Request $request) => $request->user());
     Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::get('/dashboard', [DashboardController::class, 'index']);
