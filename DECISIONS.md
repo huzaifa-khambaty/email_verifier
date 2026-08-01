@@ -248,7 +248,33 @@ Still applies at 6.5M-record scale, arguably more so:
 - `VALID`/`CATCH_ALL` are strong signals, not guarantees — some servers
   accept every `RCPT TO` or defer real validation to `DATA` time.
 
+## Deployment (v2 §11)
+**Implemented** — `.github/workflows/{ci,deploy}.yml`, `deploy/`,
+`DEPLOYMENT.md`.
+
+- **No staging environment.** Single production environment on the
+  Ubuntu VPS. Every push to `main` that passes CI deploys — there's no
+  separate approval gate, so `main` is treated as always-shippable.
+- **Migrations run automatically** on every deploy, via
+  `php artisan migrate --force` in `remote-deploy.sh`. No manual DB
+  changes in production (v2 §11 "No manual production edits after
+  CI/CD").
+- **Zero-downtime via atomic symlink swap** (Capistrano-style
+  `releases/<sha>/` + `shared/` + `current` symlink), not an in-place
+  overwrite. Backend (`composer install --no-dev`) and frontend
+  (`npm run build`) are both built **in CI**, not on the VPS — the
+  server needs PHP, Nginx, MariaDB, and Supervisor, but never Composer or
+  Node.
+- **Secrets never flow through CI.** `shared/backend/.env` lives on the
+  VPS permanently, set up once by hand, and is symlinked into every new
+  release. GitHub Actions only holds SSH connection secrets
+  (`DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_PORT`/`DEPLOY_SSH_KEY`), never
+  application secrets.
+- **Rollback** is re-pointing the `current` symlink to a previous
+  release and restarting workers — no rebuild required (see
+  `DEPLOYMENT.md` "Manual deploy / rollback").
+
 ---
 
-Still open (not blocking bootstrap/schema work, see `TODO.md`): export
-file format, audit log scope/retention, GitHub Actions deploy target.
+Still open (not blocking anything currently in progress, see `TODO.md`):
+export file format, audit log scope/retention.

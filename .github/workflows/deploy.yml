@@ -1,0 +1,89 @@
+name: Deploy
+
+# v2 §11: "GitHub Actions deploys automatically... No manual production
+# edits after CI/CD." Single production environment (see DECISIONS.md
+# "Deployment" — no staging environment for v1). Every push to main that
+# passes tests is built and deployed; there is no separate approval step,
+# so treat main as the thing that's always safe to ship.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # DEPLOY_PORT is optional — falls back to the standard SSH port if
+      # the secret isn't set.
+      SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_mysql, bcmath, openssl, tokenizer, xml, ctype, json, fileinfo
+          tools: composer
+          coverage: none
+
+      - name: Install backend production dependencies
+        working-directory: backend
+        run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Package release
+        id: package
+        run: |
+          RELEASE_FILE="release-${{ github.sha }}.tar.gz"
+          tar --exclude='backend/tests' \
+              --exclude='backend/.env*' \
+              --exclude='backend/storage/logs' \
+              --exclude='backend/storage/framework/cache' \
+              --exclude='backend/storage/framework/sessions' \
+              --exclude='backend/storage/framework/views' \
+              --exclude='backend/storage/app/private' \
+              -czf "$RELEASE_FILE" backend frontend/dist
+          echo "release_file=$RELEASE_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust the VPS host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "$SSH_PORT" "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload release + deploy script
+        run: |
+          scp -P "$SSH_PORT" \
+            "${{ steps.package.outputs.release_file }}" deploy/remote-deploy.sh \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/var/www/email-verifier/incoming/"
+
+      - name: Run remote deploy
+        run: |
+          ssh -p "$SSH_PORT" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "bash /var/www/email-verifier/incoming/remote-deploy.sh '${{ steps.package.outputs.release_file }}' '${{ github.sha }}'"
