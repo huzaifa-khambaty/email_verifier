@@ -71,7 +71,15 @@ class DomainController extends Controller
             $total = (int) $row->total;
             $catchAll = (int) $row->catch_all;
             $valid = (int) $row->valid;
-            $settled = $catchAll + $valid + (int) $row->invalid + (int) $row->unknown;
+
+            // Denominator is answers the server actually gave. UNKNOWN and
+            // TEMP_FAILURE mean no answer arrived (timeout, dropped
+            // connection, us being blocked) — counting those against the
+            // domain reported "0% useful" in red for a domain we simply
+            // never reached, which reads as "worthless" when the truth is
+            // "unmeasured". The Unknown column and the Refusing badge
+            // carry that signal instead.
+            $answered = $catchAll + $valid + (int) $row->invalid;
 
             return [
                 'id' => $row->id,
@@ -89,10 +97,11 @@ class DomainController extends Controller
                     && $row->unresponsive_until > now()->toDateTimeString(),
                 'delay_seconds' => (int) $row->delay_seconds,
                 'max_workers' => (int) $row->max_workers,
-                // The number the decision hangs on: how much of what this
-                // domain returns is actually usable. 0% means every
-                // connection spent on it bought nothing.
-                'useful_pct' => $settled > 0 ? (int) round($valid / $settled * 100) : null,
+                // The number the decision hangs on: of the answers this
+                // domain gave, how many were usable. 0% means every reply
+                // it did give was worthless (all catch-all or invalid);
+                // null means it has not answered yet at all.
+                'useful_pct' => $answered > 0 ? (int) round($valid / $answered * 100) : null,
                 // Rough cost of finishing it at the current per-domain rate.
                 'hours_remaining' => $row->delay_seconds > 0 && $row->pending > 0
                     ? round((int) $row->pending / (60 / $row->delay_seconds * max(1, $row->max_workers)) / 60, 1)

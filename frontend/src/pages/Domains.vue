@@ -105,8 +105,10 @@ onMounted(fetchDomains)
     <div class="mx-auto max-w-6xl">
       <h2 class="mb-1 text-lg font-semibold text-[#0b0b0b] dark:text-white">Domains</h2>
       <p class="mb-4 text-xs text-[#898781]">
-        Useful % is the share of settled results that came back Valid. A domain at 0% is spending
-        connections without producing anything you can send to — ignoring it frees that throughput.
+        Useful % is how many of the answers a domain actually gave came back Valid. 0% means every
+        reply was catch-all or invalid — connections spent producing nothing you can send to, so
+        ignoring it frees that throughput. A dash means it hasn't answered yet; check the Unknown
+        column, which counts timeouts and rejections of us rather than verdicts on the address.
       </p>
 
       <div class="mb-3 flex flex-wrap gap-2">
@@ -171,6 +173,7 @@ onMounted(fetchDomains)
               <div><dt class="inline text-[#898781]">Catch-all</dt> <dd class="inline font-medium">{{ row.catch_all.toLocaleString() }}</dd></div>
               <div><dt class="inline text-[#898781]">Pending</dt> <dd class="inline font-medium">{{ row.pending.toLocaleString() }}</dd></div>
               <div><dt class="inline text-[#898781]">Invalid</dt> <dd class="inline font-medium">{{ row.invalid.toLocaleString() }}</dd></div>
+              <div><dt class="inline text-[#898781]">Unknown</dt> <dd class="inline font-medium">{{ row.unknown.toLocaleString() }}</dd></div>
               <div><dt class="inline text-[#898781]">Ignored</dt> <dd class="inline font-medium">{{ row.ignored.toLocaleString() }}</dd></div>
             </dl>
 
@@ -192,7 +195,7 @@ onMounted(fetchDomains)
         </ul>
 
         <div class="hidden overflow-x-auto rounded-lg border border-[#e1e0d9] dark:border-[#2c2c2a] sm:block">
-          <table class="w-full min-w-[52rem] border-collapse bg-[#fcfcfb] text-sm dark:bg-[#1a1a19]">
+          <table class="w-full min-w-[62rem] border-collapse bg-[#fcfcfb] text-sm dark:bg-[#1a1a19]">
             <thead>
               <tr class="border-b border-[#e1e0d9] text-left text-xs uppercase tracking-wide text-[#898781] dark:border-[#2c2c2a]">
                 <th class="px-4 py-2.5 font-medium">Domain</th>
@@ -201,6 +204,12 @@ onMounted(fetchDomains)
                 <th class="px-3 py-2.5 text-right font-medium">Valid</th>
                 <th class="px-3 py-2.5 text-right font-medium">Catch-all</th>
                 <th class="px-3 py-2.5 text-right font-medium">Invalid</th>
+                <!-- Unknown and Ignored are shown so the columns add up to
+                     Total. Without them a domain whose addresses all timed
+                     out read as "total 2" with every visible column zero,
+                     which looks like the records went missing. -->
+                <th class="px-3 py-2.5 text-right font-medium">Unknown</th>
+                <th class="px-3 py-2.5 text-right font-medium">Ignored</th>
                 <th class="px-3 py-2.5 text-right font-medium">Useful</th>
                 <th class="px-3 py-2.5 text-right font-medium">Left</th>
                 <th class="px-4 py-2.5 font-medium"></th>
@@ -227,6 +236,8 @@ onMounted(fetchDomains)
                 <td class="px-3 py-2.5 text-right text-[#52514e] dark:text-[#c3c2b7]">{{ row.valid.toLocaleString() }}</td>
                 <td class="px-3 py-2.5 text-right text-[#52514e] dark:text-[#c3c2b7]">{{ row.catch_all.toLocaleString() }}</td>
                 <td class="px-3 py-2.5 text-right text-[#52514e] dark:text-[#c3c2b7]">{{ row.invalid.toLocaleString() }}</td>
+                <td class="px-3 py-2.5 text-right text-[#52514e] dark:text-[#c3c2b7]">{{ row.unknown.toLocaleString() }}</td>
+                <td class="px-3 py-2.5 text-right text-[#52514e] dark:text-[#c3c2b7]">{{ row.ignored.toLocaleString() }}</td>
                 <td class="px-3 py-2.5 text-right font-semibold" :style="{ color: usefulColor(row.useful_pct) }">
                   {{ row.useful_pct === null ? '—' : row.useful_pct + '%' }}
                 </td>
