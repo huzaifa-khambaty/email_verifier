@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\VerificationJob;
 use App\Models\WorkerStatus;
+use App\Services\Dashboard\InsightGenerator;
+use App\Services\Dashboard\QueueDiagnostics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
@@ -16,7 +18,7 @@ class DashboardController extends Controller
      * verification_jobs row, not every row ever created for it — a
      * re-verified email shouldn't count twice.
      */
-    public function index(): JsonResponse
+    public function index(QueueDiagnostics $diagnostics, InsightGenerator $insights): JsonResponse
     {
         $counts = DB::table('verification_jobs as vj')
             ->select('vj.status', DB::raw('count(*) as total'))
@@ -45,7 +47,7 @@ class DashboardController extends Controller
             ->whereDate('processed_at', now()->toDateString())
             ->count();
 
-        return response()->json([
+        $stats = [
             'pending' => (int) ($counts['PENDING'] ?? 0),
             'processing' => (int) ($counts['PROCESSING'] ?? 0),
             'verified' => (int) ($counts['VALID'] ?? 0),
@@ -57,6 +59,22 @@ class DashboardController extends Controller
             'queue_speed_per_min' => intdiv($processedLastFiveMinutes, 5),
             'active_workers' => $activeWorkers,
             'processed_today' => $processedToday,
+        ];
+
+        // Diagnostics answer "why is anything still pending, and when
+        // will it move" on screen, rather than requiring someone to read
+        // the database to find out.
+        $blockers = $diagnostics->blockers();
+        $flags = $diagnostics->domainFlags();
+
+        return response()->json($stats + [
+            'total' => array_sum($counts->all()),
+            'workers_expected' => WorkerStatus::count(),
+            'blockers' => $blockers,
+            'domain_flags' => $flags,
+            'throughput' => $diagnostics->recentThroughput(),
+            'insights' => $insights->generate($stats, $blockers, $flags),
+            'generated_at' => now()->toIso8601String(),
         ]);
     }
 }

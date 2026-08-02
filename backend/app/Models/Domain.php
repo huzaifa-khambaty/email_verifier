@@ -21,6 +21,8 @@ class Domain extends Model
         'active_workers',
         'last_dispatched_at',
         'consecutive_failures',
+        'exhausted_failures',
+        'unresponsive_until',
         'cooling_down_until',
     ];
 
@@ -29,6 +31,7 @@ class Domain extends Model
         return [
             'is_catch_all' => 'boolean',
             'catch_all_confirmed_at' => 'datetime',
+            'unresponsive_until' => 'datetime',
             'last_dispatched_at' => 'datetime',
             'cooling_down_until' => 'datetime',
         ];

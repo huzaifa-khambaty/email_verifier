@@ -43,6 +43,18 @@ return [
         // definitive VALID/INVALID resets the count to zero.
         'catch_all_confirmations' => (int) env('VERIFY_CATCH_ALL_CONFIRMATIONS', 3),
 
+        // How many addresses must exhaust every retry with a
+        // connection-level failure (and none succeed) before a domain is
+        // treated as refusing verification traffic. 10 addresses at
+        // max_attempts each is ~50 failed connections — enough to
+        // distinguish "this provider blocks us" from "a bad afternoon".
+        'unresponsive_threshold' => (int) env('VERIFY_UNRESPONSIVE_THRESHOLD', 10),
+
+        // How long the flag holds before the domain is retried normally.
+        // Expiring rather than permanent so a provider that starts
+        // answering again is picked up without manual intervention.
+        'unresponsive_days' => (int) env('VERIFY_UNRESPONSIVE_DAYS', 7),
+
         // Domains seeded with the stricter major_provider_delay_seconds /
         // max_workers=1 defaults instead of the general defaults — see
         // DECISIONS.md "Stricter defaults for major providers".

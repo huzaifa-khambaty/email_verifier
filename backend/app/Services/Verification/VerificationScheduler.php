@@ -44,6 +44,13 @@ class VerificationScheduler
                 ->where('vj.status', 'PENDING')
                 ->whereColumn('d.active_workers', '<', 'd.max_workers')
                 ->where(fn ($q) => $q->whereNull('d.cooling_down_until')->orWhere('d.cooling_down_until', '<', $now))
+                // Domains that refuse verification traffic are skipped
+                // until the flag lapses, rather than claimed and dialled
+                // for a connection that is known to be dropped. Comparing
+                // against $now (not just NULL) is what makes the flag
+                // self-healing: once it expires the domain flows through
+                // this query again with no intervention.
+                ->where(fn ($q) => $q->whereNull('d.unresponsive_until')->orWhere('d.unresponsive_until', '<=', $now))
                 ->where(fn ($q) => $q->whereNull('vj.next_attempt_at')->orWhere('vj.next_attempt_at', '<=', $now))
                 ->orderByDesc('d.priority')
                 ->orderBy('vj.id')
@@ -180,8 +187,11 @@ class VerificationScheduler
             // always report "already catch-all" and the drain below
             // would never fire.
             $wasAlreadyCatchAll = $domain->is_catch_all;
+            $wasAlreadyUnresponsive = $domain->unresponsive_until !== null
+                && $domain->unresponsive_until->isFuture();
 
             $this->trackCatchAll($domain, $result->status, $updates);
+            $this->trackUnresponsive($domain, $result->status, $finalStatus, $updates);
 
             $domain->update($updates);
 
@@ -190,6 +200,10 @@ class VerificationScheduler
             // touches every pending row for the domain.
             if (($updates['is_catch_all'] ?? false) && ! $wasAlreadyCatchAll) {
                 $this->resolvePendingForCatchAllDomain($domain->id);
+            }
+
+            if (! empty($updates['unresponsive_until']) && ! $wasAlreadyUnresponsive) {
+                $this->resolvePendingForUnresponsiveDomain($domain->id);
             }
         });
     }
@@ -232,6 +246,87 @@ class VerificationScheduler
                 $updates['catch_all_confirmed_at'] = null;
             }
         }
+    }
+
+    /**
+     * Accumulates evidence that a domain refuses verification traffic
+     * altogether, mutating $updates in place.
+     *
+     * Counts only addresses that exhausted EVERY retry ($finalStatus
+     * settling as terminal TEMP_FAILURE), not individual transient
+     * failures — a single timeout means nothing, but ten addresses each
+     * failing five times in a row is a provider that won't talk to us.
+     *
+     * Any definitive result (VALID/INVALID/CATCH_ALL) proves the domain
+     * does answer, so it zeroes the counter and lifts the flag
+     * immediately. That's the same self-correcting shape as the
+     * catch-all detection.
+     */
+    private function trackUnresponsive(Domain $domain, string $resultStatus, string $finalStatus, array &$updates): void
+    {
+        if (in_array($resultStatus, ['VALID', 'INVALID', 'CATCH_ALL'], true)) {
+            $updates['exhausted_failures'] = 0;
+
+            if ($domain->unresponsive_until !== null) {
+                $updates['unresponsive_until'] = null;
+            }
+
+            return;
+        }
+
+        // Only a TEMP_FAILURE that has run out of retries counts — while
+        // finalStatus is still PENDING the address has attempts left.
+        if ($resultStatus !== 'TEMP_FAILURE' || $finalStatus !== 'TEMP_FAILURE') {
+            return;
+        }
+
+        $exhausted = $domain->exhausted_failures + 1;
+        $updates['exhausted_failures'] = $exhausted;
+
+        $threshold = $this->config['unresponsive_threshold'] ?? 10;
+
+        if ($exhausted >= $threshold) {
+            $updates['unresponsive_until'] = Carbon::now()->addDays($this->config['unresponsive_days'] ?? 7);
+        }
+    }
+
+    /**
+     * Settles every still-pending address on an unresponsive domain
+     * instead of letting each one grind through its full retry schedule.
+     *
+     * These are recorded as TEMP_FAILURE — the same terminal state they
+     * would have reached anyway — with a response explaining that the
+     * verdict came from the domain's record rather than from a
+     * connection, so the result is never mistaken for a real SMTP reply.
+     */
+    public function resolvePendingForUnresponsiveDomain(int $domainId): int
+    {
+        $resolved = 0;
+
+        do {
+            $ids = DB::table('verification_jobs')
+                ->join('emails', 'emails.id', '=', 'verification_jobs.email_id')
+                ->where('emails.domain_id', $domainId)
+                ->where('verification_jobs.status', 'PENDING')
+                ->limit(5000)
+                ->pluck('verification_jobs.id');
+
+            if ($ids->isEmpty()) {
+                break;
+            }
+
+            $resolved += DB::table('verification_jobs')
+                ->whereIn('id', $ids)
+                ->update([
+                    'status' => 'TEMP_FAILURE',
+                    'smtp_response' => 'Domain is refusing verification connections; settled without further retries.',
+                    'next_attempt_at' => null,
+                    'processed_at' => Carbon::now(),
+                    'updated_at' => Carbon::now(),
+                ]);
+        } while ($ids->count() === 5000);
+
+        return $resolved;
     }
 
     /**
