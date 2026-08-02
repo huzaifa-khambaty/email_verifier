@@ -55,6 +55,13 @@ return [
         // answering again is picked up without manual intervention.
         'unresponsive_days' => (int) env('VERIFY_UNRESPONSIVE_DAYS', 7),
 
+        // How long a claimed job may sit before it's assumed its worker
+        // died and the connection slot is released. Must comfortably
+        // exceed the longest a genuine check can take — MX fallback
+        // across several hosts, each with its own connect and read
+        // timeout — so a slow but live job is never reaped mid-flight.
+        'stale_claim_minutes' => (int) env('VERIFY_STALE_CLAIM_MINUTES', 10),
+
         // Domains seeded with the stricter major_provider_delay_seconds /
         // max_workers=1 defaults instead of the general defaults — see
         // DECISIONS.md "Stricter defaults for major providers".

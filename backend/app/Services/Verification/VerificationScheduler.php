@@ -34,6 +34,60 @@ class VerificationScheduler
      */
     public function claimBatch(int $limit): Collection
     {
+        $claimed = $this->attemptClaim($limit);
+
+        // An empty claim is the exact signal that slots may have leaked:
+        // there is work outstanding but nothing is schedulable. Reaping
+        // here rather than on a timer means recovery is automatic and
+        // costs nothing while the queue is flowing normally.
+        if ($claimed->isEmpty() && $this->reapStaleClaims() > 0) {
+            $claimed = $this->attemptClaim($limit);
+        }
+
+        return $claimed;
+    }
+
+    /**
+     * Releases connection slots and jobs stranded by a worker that died
+     * mid-job.
+     *
+     * active_workers is incremented at claim time and decremented in
+     * recordResult(). A worker killed between the two — which Supervisor
+     * does on every deploy once stopwaitsecs elapses — leaves the counter
+     * permanently raised, so the domain reads as busy forever and is
+     * never scheduled again. Observed in production: a deploy stranded
+     * gmail.com and a dozen other domains at 1/1 with 785 addresses
+     * queued behind a slot nothing was using.
+     *
+     * The threshold must exceed the longest a real check can take (MX
+     * fallback across several hosts, each with connect+read timeouts), so
+     * a slow-but-live job is never reaped out from under itself.
+     */
+    public function reapStaleClaims(): int
+    {
+        $staleBefore = Carbon::now()->subMinutes($this->config['stale_claim_minutes'] ?? 10);
+
+        // Jobs whose worker never came back: return them to the queue.
+        // attempts is untouched — the check never completed, so it
+        // shouldn't count against the retry budget.
+        $jobs = DB::table('verification_jobs')
+            ->where('status', 'PROCESSING')
+            ->where('updated_at', '<', $staleBefore)
+            ->update(['status' => 'PENDING', 'updated_at' => Carbon::now()]);
+
+        $domains = DB::table('domains')
+            ->where('active_workers', '>', 0)
+            ->where(fn ($q) => $q
+                ->whereNull('last_dispatched_at')
+                ->orWhere('last_dispatched_at', '<', $staleBefore))
+            ->update(['active_workers' => 0, 'updated_at' => Carbon::now()]);
+
+        return $jobs + $domains;
+    }
+
+    /** @return Collection<int, VerificationJob> */
+    private function attemptClaim(int $limit): Collection
+    {
         return DB::transaction(function () use ($limit) {
             $poolSize = max($limit * 10, 100);
             $now = Carbon::now();
