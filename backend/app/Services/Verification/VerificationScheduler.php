@@ -42,26 +42,39 @@ class VerificationScheduler
                 ->join('emails as e', 'e.id', '=', 'vj.email_id')
                 ->join('domains as d', 'd.id', '=', 'e.domain_id')
                 ->where('vj.status', 'PENDING')
-                // Operator-ignored domains are never dialled. Their
-                // addresses are moved to IGNORED when the flag is set, so
-                // this mainly catches anything imported while ignored.
-                ->where('d.is_ignored', false)
-                ->whereColumn('d.active_workers', '<', 'd.max_workers')
-                ->where(fn ($q) => $q->whereNull('d.cooling_down_until')->orWhere('d.cooling_down_until', '<', $now))
-                // Domains that refuse verification traffic are skipped
-                // until the flag lapses, rather than claimed and dialled
-                // for a connection that is known to be dropped. Comparing
-                // against $now (not just NULL) is what makes the flag
-                // self-healing: once it expires the domain flows through
-                // this query again with no intervention.
-                ->where(fn ($q) => $q->whereNull('d.unresponsive_until')->orWhere('d.unresponsive_until', '<=', $now))
-                ->where(fn ($q) => $q->whereNull('vj.next_attempt_at')->orWhere('vj.next_attempt_at', '<=', $now))
+                // Ignored domains ARE claimed, and bypass every throttle
+                // below. The ignore decision is applied when a record is
+                // processed rather than when it is imported, so adding a
+                // domain to the list after an upload still settles the
+                // addresses already queued against it.
+                //
+                // Bypassing the throttles is the point: those exist to
+                // pace real SMTP connections, and an ignored record makes
+                // none. Leaving them gated would mean marking ~4,500
+                // Yahoo addresses as ignored took ten hours at 8s each,
+                // which defeats the purpose of ignoring them.
+                ->where(fn ($outer) => $outer
+                    ->where('d.is_ignored', true)
+                    ->orWhere(fn ($gated) => $gated
+                        ->whereColumn('d.active_workers', '<', 'd.max_workers')
+                        ->where(fn ($q) => $q->whereNull('d.cooling_down_until')->orWhere('d.cooling_down_until', '<', $now))
+                        // Domains refusing verification traffic are skipped
+                        // until the flag lapses, rather than dialled for a
+                        // connection known to be dropped. Comparing against
+                        // $now (not just NULL) is what makes the flag
+                        // self-healing: once it expires the domain flows
+                        // through again with no intervention.
+                        ->where(fn ($q) => $q->whereNull('d.unresponsive_until')->orWhere('d.unresponsive_until', '<=', $now))
+                        ->where(fn ($q) => $q->whereNull('vj.next_attempt_at')->orWhere('vj.next_attempt_at', '<=', $now))
+                    )
+                )
                 ->orderByDesc('d.priority')
                 ->orderBy('vj.id')
                 ->limit($poolSize)
                 ->select(
                     'vj.id as job_id',
                     'd.id as domain_id',
+                    'd.is_ignored',
                     'd.delay_seconds',
                     'd.last_dispatched_at',
                     'd.max_workers',
@@ -88,6 +101,15 @@ class VerificationScheduler
                 }
 
                 $domainId = $row->domain_id;
+
+                // Ignored records cost no connection, so neither the
+                // per-domain connection cap nor the inter-request delay
+                // applies — both exist purely to pace real SMTP traffic.
+                if ($row->is_ignored) {
+                    $selectedJobIds[] = $row->job_id;
+                    continue;
+                }
+
                 $remainingSlots[$domainId] ??= $row->max_workers - $row->active_workers;
                 if ($remainingSlots[$domainId] <= 0) {
                     continue;
@@ -331,24 +353,6 @@ class VerificationScheduler
         } while ($ids->count() === 5000);
 
         return $resolved;
-    }
-
-    /**
-     * Moves a domain's outstanding addresses to IGNORED when an operator
-     * adds it to the ignore list.
-     *
-     * Only PENDING rows are touched — addresses already verified keep
-     * their real result, because ignoring a domain is a decision about
-     * future work, not a reason to discard findings already paid for.
-     */
-    public function applyIgnoreToDomain(int $domainId): int
-    {
-        return $this->bulkUpdatePending($domainId, 'PENDING', [
-            'status' => 'IGNORED',
-            'smtp_response' => 'Domain is on the ignore list; not verified by choice.',
-            'next_attempt_at' => null,
-            'processed_at' => Carbon::now(),
-        ]);
     }
 
     /**

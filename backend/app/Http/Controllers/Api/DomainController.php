@@ -126,19 +126,35 @@ class DomainController extends Controller
             'ignored_at' => $ignore ? now() : null,
         ]);
 
-        // Fully reversible: ignoring parks outstanding addresses, and
-        // un-ignoring puts them straight back in the queue.
-        $affected = $ignore
-            ? $scheduler->applyIgnoreToDomain($domain->id)
-            : $scheduler->restoreIgnoredDomain($domain->id);
+        if ($ignore) {
+            // Deliberately NOT rewritten here. Outstanding addresses stay
+            // PENDING and are marked IGNORED by the worker as it reaches
+            // each one, so the flag is read at processing time and always
+            // reflects its current value — a domain ignored and then
+            // un-ignored a minute later never churns statuses in between.
+            // They bypass the connection throttles, so this drains quickly.
+            $affected = DB::table('verification_jobs')
+                ->join('emails', 'emails.id', '=', 'verification_jobs.email_id')
+                ->where('emails.domain_id', $domain->id)
+                ->whereIn('verification_jobs.status', ['PENDING', 'PROCESSING'])
+                ->count();
+
+            $message = $affected > 0
+                ? "{$domain->name} ignored; {$affected} queued address(es) will be marked ignored as they are processed."
+                : "{$domain->name} ignored; new addresses on it will not be verified.";
+        } else {
+            // No worker path can undo an IGNORED row, so the reversal is
+            // applied directly.
+            $affected = $scheduler->restoreIgnoredDomain($domain->id);
+
+            $message = "{$domain->name} restored; {$affected} address(es) returned to the queue.";
+        }
 
         return response()->json([
             'domain' => $domain->name,
             'is_ignored' => $ignore,
             'affected' => $affected,
-            'message' => $ignore
-                ? "{$domain->name} ignored; {$affected} address(es) parked."
-                : "{$domain->name} restored; {$affected} address(es) returned to the queue.",
+            'message' => $message,
         ]);
     }
 }

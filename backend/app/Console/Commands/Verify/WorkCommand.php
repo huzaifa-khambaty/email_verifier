@@ -75,19 +75,38 @@ class WorkCommand extends Command
 
                 $email = $job->email;
 
-                // Safety net for addresses imported after a domain was
-                // already confirmed catch-all. The bulk resolver handles
-                // the backlog at confirmation time, but anything arriving
-                // later would otherwise pay for an SMTP round trip whose
-                // answer is already known.
-                $result = $email->domain->is_catch_all
-                    ? new VerificationResult(
+                // The ignore list is applied HERE, at processing time,
+                // rather than at import. That ordering is deliberate: an
+                // address is imported before anyone has seen how its
+                // domain behaves, so the decision to skip it can only be
+                // made afterwards — and applying it here means a domain
+                // added to the list after an upload still settles the
+                // addresses already queued against it.
+                //
+                // Checked before the catch-all shortcut because an
+                // explicit operator decision outranks an inferred one.
+                if ($email->domain->is_ignored) {
+                    $result = new VerificationResult(
+                        'IGNORED',
+                        null,
+                        'Domain is on the ignore list; not verified by choice.',
+                        null,
+                    );
+                } elseif ($email->domain->is_catch_all) {
+                    // Safety net for addresses imported after a domain was
+                    // already confirmed catch-all. The bulk resolver handles
+                    // the backlog at confirmation time, but anything arriving
+                    // later would otherwise pay for an SMTP round trip whose
+                    // answer is already known.
+                    $result = new VerificationResult(
                         'CATCH_ALL',
                         null,
                         'Domain confirmed catch-all; resolved without an individual SMTP check.',
                         null,
-                    )
-                    : $verifier->verify($email->email, $email->domain->name);
+                    );
+                } else {
+                    $result = $verifier->verify($email->email, $email->domain->name);
+                }
 
                 $scheduler->recordResult($job, $result);
 
