@@ -12,6 +12,8 @@ class Domain extends Model
 
     protected $fillable = [
         'name',
+        'is_ignored',
+        'ignored_at',
         'is_catch_all',
         'catch_all_detections',
         'catch_all_confirmed_at',
@@ -29,6 +31,8 @@ class Domain extends Model
     protected function casts(): array
     {
         return [
+            'is_ignored' => 'boolean',
+            'ignored_at' => 'datetime',
             'is_catch_all' => 'boolean',
             'catch_all_confirmed_at' => 'datetime',
             'unresponsive_until' => 'datetime',

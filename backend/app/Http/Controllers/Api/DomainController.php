@@ -1,0 +1,144 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Domain;
+use App\Services\Verification\VerificationScheduler;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+/**
+ * Per-domain verification breakdown and the operator ignore list.
+ *
+ * Exists so the decision "is this domain worth verifying?" can be made
+ * from evidence on screen — a domain that is 100% catch-all costs a full
+ * SMTP conversation per address and returns nothing usable, and at 6.5M
+ * scale that choice is worth days of throughput.
+ */
+class DomainController extends Controller
+{
+    /** Domains with their status breakdown, worst-value first by default. */
+    public function index(Request $request): JsonResponse
+    {
+        $perPage = min((int) $request->query('per_page', 25), 100);
+
+        $query = DB::table('domains as d')
+            ->leftJoin('emails as e', 'e.domain_id', '=', 'd.id')
+            ->leftJoin('verification_jobs as vj', 'vj.email_id', '=', 'e.id')
+            ->groupBy('d.id', 'd.name', 'd.is_ignored', 'd.ignored_at', 'd.is_catch_all',
+                'd.unresponsive_until', 'd.cooling_down_until', 'd.delay_seconds', 'd.max_workers')
+            ->select([
+                'd.id',
+                'd.name',
+                'd.is_ignored',
+                'd.ignored_at',
+                'd.is_catch_all',
+                'd.unresponsive_until',
+                'd.cooling_down_until',
+                'd.delay_seconds',
+                'd.max_workers',
+                DB::raw('COUNT(vj.id) as total'),
+                DB::raw("SUM(vj.status IN ('PENDING','PROCESSING')) as pending"),
+                DB::raw("SUM(vj.status = 'VALID') as valid"),
+                DB::raw("SUM(vj.status = 'CATCH_ALL') as catch_all"),
+                DB::raw("SUM(vj.status IN ('INVALID','NO_MX')) as invalid"),
+                DB::raw("SUM(vj.status IN ('UNKNOWN','TEMP_FAILURE')) as unknown"),
+                DB::raw("SUM(vj.status = 'IGNORED') as ignored"),
+            ]);
+
+        if ($search = trim((string) $request->query('search', ''))) {
+            $query->where('d.name', 'like', '%'.$search.'%');
+        }
+
+        match ($request->query('filter')) {
+            'ignored' => $query->where('d.is_ignored', true),
+            'catch_all' => $query->where('d.is_catch_all', true),
+            'problem' => $query->where(fn ($q) => $q
+                ->where('d.is_catch_all', true)
+                ->orWhereNotNull('d.unresponsive_until')),
+            default => null,
+        };
+
+        // Biggest domains first: those are where an ignore decision
+        // actually changes the workload.
+        $query->orderByDesc(DB::raw('COUNT(vj.id)'));
+
+        $domains = $query->paginate($perPage)->withQueryString();
+
+        $domains->getCollection()->transform(function ($row) {
+            $total = (int) $row->total;
+            $catchAll = (int) $row->catch_all;
+            $valid = (int) $row->valid;
+            $settled = $catchAll + $valid + (int) $row->invalid + (int) $row->unknown;
+
+            return [
+                'id' => $row->id,
+                'name' => $row->name,
+                'total' => $total,
+                'pending' => (int) $row->pending,
+                'valid' => $valid,
+                'catch_all' => $catchAll,
+                'invalid' => (int) $row->invalid,
+                'unknown' => (int) $row->unknown,
+                'ignored' => (int) $row->ignored,
+                'is_ignored' => (bool) $row->is_ignored,
+                'is_catch_all' => (bool) $row->is_catch_all,
+                'is_unresponsive' => $row->unresponsive_until !== null
+                    && $row->unresponsive_until > now()->toDateTimeString(),
+                'delay_seconds' => (int) $row->delay_seconds,
+                'max_workers' => (int) $row->max_workers,
+                // The number the decision hangs on: how much of what this
+                // domain returns is actually usable. 0% means every
+                // connection spent on it bought nothing.
+                'useful_pct' => $settled > 0 ? (int) round($valid / $settled * 100) : null,
+                // Rough cost of finishing it at the current per-domain rate.
+                'hours_remaining' => $row->delay_seconds > 0 && $row->pending > 0
+                    ? round((int) $row->pending / (60 / $row->delay_seconds * max(1, $row->max_workers)) / 60, 1)
+                    : 0,
+            ];
+        });
+
+        return response()->json($domains);
+    }
+
+    /** Adds or removes a domain from the ignore list. */
+    public function update(Request $request, Domain $domain, VerificationScheduler $scheduler): JsonResponse
+    {
+        $validated = $request->validate([
+            'is_ignored' => ['required', 'boolean'],
+        ]);
+
+        $ignore = $validated['is_ignored'];
+
+        if ($ignore === $domain->is_ignored) {
+            return response()->json([
+                'domain' => $domain->name,
+                'is_ignored' => $domain->is_ignored,
+                'affected' => 0,
+                'message' => 'No change.',
+            ]);
+        }
+
+        $domain->update([
+            'is_ignored' => $ignore,
+            'ignored_at' => $ignore ? now() : null,
+        ]);
+
+        // Fully reversible: ignoring parks outstanding addresses, and
+        // un-ignoring puts them straight back in the queue.
+        $affected = $ignore
+            ? $scheduler->applyIgnoreToDomain($domain->id)
+            : $scheduler->restoreIgnoredDomain($domain->id);
+
+        return response()->json([
+            'domain' => $domain->name,
+            'is_ignored' => $ignore,
+            'affected' => $affected,
+            'message' => $ignore
+                ? "{$domain->name} ignored; {$affected} address(es) parked."
+                : "{$domain->name} restored; {$affected} address(es) returned to the queue.",
+        ]);
+    }
+}

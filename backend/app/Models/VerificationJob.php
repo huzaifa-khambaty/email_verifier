@@ -14,7 +14,7 @@ class VerificationJob extends Model
     /** Statuses per the original v1 plan's mapping table, carried into v2. */
     public const STATUSES = [
         'PENDING', 'PROCESSING', 'VALID', 'INVALID',
-        'NO_MX', 'CATCH_ALL', 'UNKNOWN', 'TEMP_FAILURE',
+        'NO_MX', 'CATCH_ALL', 'UNKNOWN', 'TEMP_FAILURE', 'IGNORED',
     ];
 
     /** Terminal, "settled" results — the only ones that stop the retry loop. */
@@ -41,6 +41,7 @@ class VerificationJob extends Model
         'catch_all' => ['CATCH_ALL'],
         'invalid' => ['INVALID', 'NO_MX'],
         'unknown' => ['UNKNOWN', 'TEMP_FAILURE'],
+        'ignored' => ['IGNORED'],
     ];
 
     /**

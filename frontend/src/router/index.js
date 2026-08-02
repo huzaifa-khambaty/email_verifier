@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
 import Dashboard from '../pages/Dashboard.vue'
+import Domains from '../pages/Domains.vue'
 import Emails from '../pages/Emails.vue'
 import Imports from '../pages/Imports.vue'
 import Login from '../pages/Login.vue'
@@ -11,6 +12,7 @@ const router = createRouter({
     { path: '/login', name: 'login', component: Login },
     { path: '/', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
     { path: '/emails', name: 'emails', component: Emails, meta: { requiresAuth: true } },
+    { path: '/domains', name: 'domains', component: Domains, meta: { requiresAuth: true } },
     { path: '/imports', name: 'imports', component: Imports, meta: { requiresAuth: true } },
   ],
 })

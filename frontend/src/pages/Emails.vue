@@ -15,6 +15,7 @@ const CARDS = [
   { key: 'catch_all', label: 'Catch-all', filter: 'catch_all', color: '#fab219' },
   { key: 'invalid', label: 'Invalid', filter: 'invalid', color: '#d03b3b' },
   { key: 'unknown', label: 'Unknown', filter: 'unknown', color: '#ec835a' },
+  { key: 'ignored', label: 'Ignored', filter: 'ignored', color: '#898781' },
 ]
 
 // Per-status dot colour in the list rows, so a row reads the same as the
@@ -28,6 +29,7 @@ const STATUS_COLOR = {
   NO_MX: '#d03b3b',
   UNKNOWN: '#ec835a',
   TEMP_FAILURE: '#ec835a',
+  IGNORED: '#898781',
 }
 
 const stats = ref(null)

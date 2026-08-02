@@ -42,6 +42,10 @@ class VerificationScheduler
                 ->join('emails as e', 'e.id', '=', 'vj.email_id')
                 ->join('domains as d', 'd.id', '=', 'e.domain_id')
                 ->where('vj.status', 'PENDING')
+                // Operator-ignored domains are never dialled. Their
+                // addresses are moved to IGNORED when the flag is set, so
+                // this mainly catches anything imported while ignored.
+                ->where('d.is_ignored', false)
                 ->whereColumn('d.active_workers', '<', 'd.max_workers')
                 ->where(fn ($q) => $q->whereNull('d.cooling_down_until')->orWhere('d.cooling_down_until', '<', $now))
                 // Domains that refuse verification traffic are skipped
@@ -327,6 +331,68 @@ class VerificationScheduler
         } while ($ids->count() === 5000);
 
         return $resolved;
+    }
+
+    /**
+     * Moves a domain's outstanding addresses to IGNORED when an operator
+     * adds it to the ignore list.
+     *
+     * Only PENDING rows are touched — addresses already verified keep
+     * their real result, because ignoring a domain is a decision about
+     * future work, not a reason to discard findings already paid for.
+     */
+    public function applyIgnoreToDomain(int $domainId): int
+    {
+        return $this->bulkUpdatePending($domainId, 'PENDING', [
+            'status' => 'IGNORED',
+            'smtp_response' => 'Domain is on the ignore list; not verified by choice.',
+            'next_attempt_at' => null,
+            'processed_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * Returns previously-ignored addresses to the queue when a domain is
+     * taken off the ignore list, so the decision is fully reversible.
+     *
+     * processed_at is cleared as well — leaving a timestamp on something
+     * that is about to be verified for the first time would make the
+     * throughput charts and date-range filters lie.
+     */
+    public function restoreIgnoredDomain(int $domainId): int
+    {
+        return $this->bulkUpdatePending($domainId, 'IGNORED', [
+            'status' => 'PENDING',
+            'smtp_response' => null,
+            'processed_at' => null,
+        ]);
+    }
+
+    /**
+     * Chunked status rewrite for one domain, so a domain holding
+     * millions of rows never takes a single enormous lock.
+     */
+    private function bulkUpdatePending(int $domainId, string $fromStatus, array $updates): int
+    {
+        $changed = 0;
+        $updates['updated_at'] = Carbon::now();
+
+        do {
+            $ids = DB::table('verification_jobs')
+                ->join('emails', 'emails.id', '=', 'verification_jobs.email_id')
+                ->where('emails.domain_id', $domainId)
+                ->where('verification_jobs.status', $fromStatus)
+                ->limit(5000)
+                ->pluck('verification_jobs.id');
+
+            if ($ids->isEmpty()) {
+                break;
+            }
+
+            $changed += DB::table('verification_jobs')->whereIn('id', $ids)->update($updates);
+        } while ($ids->count() === 5000);
+
+        return $changed;
     }
 
     /**
