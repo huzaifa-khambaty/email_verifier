@@ -248,14 +248,38 @@ class CsvImportService
 
             Email::insert($insertRows);
 
-            $newIds = Email::whereIn('email', array_keys($newRows))->pluck('id');
-            $jobRows = $newIds->map(fn ($id) => [
-                'email_id' => $id,
-                'status' => 'PENDING',
-                'attempts' => 0,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ])->all();
+            // Addresses landing on a domain that's already on the ignore
+            // list are stored exactly like any other — the address, name
+            // and batch link are all kept — but their job starts as
+            // IGNORED rather than PENDING. Creating them PENDING would
+            // queue work the scheduler is guaranteed never to pick up,
+            // so "still to do" would overstate the real backlog by
+            // however many addresses sit on ignored domains (roughly half
+            // a typical import). Un-ignoring the domain returns them to
+            // PENDING, so nothing here is lost — it's a re-runnable
+            // parking state, not a discard.
+            $newEmails = Email::whereIn('email', array_keys($newRows))->get(['id', 'domain_id']);
+
+            $ignoredDomainIds = Domain::whereIn('id', $newEmails->pluck('domain_id')->unique())
+                ->where('is_ignored', true)
+                ->pluck('id')
+                ->flip();
+
+            $jobRows = $newEmails->map(function ($email) use ($ignoredDomainIds, $now) {
+                $isIgnored = $ignoredDomainIds->has($email->domain_id);
+
+                return [
+                    'email_id' => $email->id,
+                    'status' => $isIgnored ? 'IGNORED' : 'PENDING',
+                    'smtp_response' => $isIgnored
+                        ? 'Domain is on the ignore list; not verified by choice.'
+                        : null,
+                    'processed_at' => $isIgnored ? $now : null,
+                    'attempts' => 0,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            })->all();
 
             DB::table('verification_jobs')->insert($jobRows);
 
