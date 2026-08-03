@@ -43,6 +43,18 @@ class VerificationScheduler
      */
     public function claimBatch(int $limit): Collection
     {
+        // Settle ignored domains in bulk before claiming anything.
+        // Routing them through the claim loop meant ~25,000 addresses
+        // moving 100 at a time — thousands of round trips to apply a
+        // verdict that needs no connection and is already known. One
+        // UPDATE per domain does the same work instantly and leaves the
+        // workers free for addresses that actually need checking.
+        //
+        // Still evaluated here rather than at import: the flag is read
+        // now, so ignoring a domain after an upload settles the addresses
+        // already queued against it, and un-ignoring returns them.
+        $this->resolveIgnoredDomains();
+
         $claimed = $this->attemptClaim($limit);
 
         // An empty claim is the exact signal that slots may have leaked:
@@ -54,6 +66,37 @@ class VerificationScheduler
         }
 
         return $claimed;
+    }
+
+    /**
+     * Marks outstanding addresses on ignored domains without dialling.
+     *
+     * Cheap when there is nothing to do: the lookup for ignored domains
+     * holding pending work is an indexed check that returns empty on
+     * virtually every call.
+     */
+    public function resolveIgnoredDomains(): int
+    {
+        $domainIds = DB::table('domains')
+            ->join('emails', 'emails.domain_id', '=', 'domains.id')
+            ->join('verification_jobs', 'verification_jobs.email_id', '=', 'emails.id')
+            ->where('domains.is_ignored', true)
+            ->where('verification_jobs.status', 'PENDING')
+            ->distinct()
+            ->pluck('domains.id');
+
+        $resolved = 0;
+
+        foreach ($domainIds as $domainId) {
+            $resolved += $this->bulkUpdatePending($domainId, 'PENDING', [
+                'status' => 'IGNORED',
+                'smtp_response' => 'Domain is on the ignore list; not verified by choice.',
+                'next_attempt_at' => null,
+                'processed_at' => Carbon::now(),
+            ]);
+        }
+
+        return $resolved;
     }
 
     /**
@@ -324,10 +367,32 @@ class VerificationScheduler
             $confirmations = $domain->catch_all_detections + 1;
             $updates['catch_all_detections'] = $confirmations;
 
-            if ($confirmations >= ($this->config['catch_all_confirmations'] ?? 3)) {
-                $updates['is_catch_all'] = true;
-                $updates['catch_all_confirmed_at'] = Carbon::now();
+            if ($confirmations < ($this->config['catch_all_confirmations'] ?? 3)) {
+                return;
             }
+
+            // Consecutive confirmations alone are not enough evidence. A
+            // domain that returns catch-all for ~10% of addresses will
+            // produce three in a row by chance sooner or later, and that
+            // is exactly what happened: hotmail.com was flagged despite
+            // 1,407 VALID and 292 INVALID results, after which 8,082 of
+            // its addresses were shortcut to CATCH_ALL without ever being
+            // checked — real answers replaced by a fabricated one.
+            //
+            // A single definitive result anywhere in the domain's history
+            // disproves catch-all outright: a server that distinguishes a
+            // real mailbox from a fake one is, by definition, not
+            // accepting everything. This is the same standard
+            // verify:detect-catch-all applies, which correctly excluded
+            // hotmail while this path did not.
+            if ($this->hasDefinitiveResult($domain->id)) {
+                $updates['catch_all_detections'] = 0;
+
+                return;
+            }
+
+            $updates['is_catch_all'] = true;
+            $updates['catch_all_confirmed_at'] = Carbon::now();
 
             return;
         }
@@ -340,6 +405,20 @@ class VerificationScheduler
                 $updates['catch_all_confirmed_at'] = null;
             }
         }
+    }
+
+    /**
+     * Whether this domain has ever returned a verdict on a specific
+     * mailbox. Only checked at the moment a flag would be set, so the
+     * cost falls on a rare transition rather than every result.
+     */
+    private function hasDefinitiveResult(int $domainId): bool
+    {
+        return DB::table('verification_jobs')
+            ->join('emails', 'emails.id', '=', 'verification_jobs.email_id')
+            ->where('emails.domain_id', $domainId)
+            ->whereIn('verification_jobs.status', ['VALID', 'INVALID'])
+            ->exists();
     }
 
     /**
