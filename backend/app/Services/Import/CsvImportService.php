@@ -27,6 +27,15 @@ class CsvImportService
 {
     private const CHUNK_SIZE = 500;
 
+    /**
+     * Attempts per chunk when MySQL picks this transaction as the
+     * deadlock victim. Deadlocks here are contention with the live
+     * verification workers, not corruption, so they clear on retry —
+     * failing the whole import for one is what stranded two 50k uploads
+     * partway through.
+     */
+    private const DEADLOCK_RETRIES = 5;
+
     public function __construct(private readonly array $schedulerConfig)
     {
     }
@@ -213,9 +222,26 @@ class CsvImportService
             ];
         }
 
-        $duplicateCount = count($rows) - $errorCount - count($candidates);
+        // Duplicates found within this chunk itself, before any database
+        // work — computed outside the transaction because it can't change
+        // between retries.
+        $inFileDuplicates = count($rows) - $errorCount - count($candidates);
 
-        DB::transaction(function () use ($batch, $candidates, &$duplicateCount) {
+        // Duplicates found against the database. Assigned (never
+        // accumulated) inside the transaction so a retry recomputes it
+        // from scratch instead of adding a second time — the reason this
+        // isn't simply `+=` on a shared counter.
+        $existingDuplicates = 0;
+
+        // Retried on deadlock. An import inserts into emails and
+        // verification_jobs while the verification workers hold locks on
+        // those same tables via their claim query, so InnoDB deadlocks are
+        // an expected outcome of the two running concurrently, not a
+        // fault. Observed in production: two consecutive 50k uploads died
+        // partway with SQLSTATE 40001. MySQL rolls back the losing
+        // transaction entirely, so re-applying the whole chunk is safe,
+        // and the dedup check inside it means a retry can't double-insert.
+        DB::transaction(function () use ($batch, $candidates, &$existingDuplicates) {
             if (empty($candidates)) {
                 return;
             }
@@ -224,7 +250,7 @@ class CsvImportService
 
             $existingRows = Email::whereIn('email', $emails)->get(['id', 'email', 'first_name', 'last_name']);
             $existing = $existingRows->pluck('email')->all();
-            $duplicateCount += count($existing);
+            $existingDuplicates = count($existing);
 
             $this->backfillMissingNames($existingRows, $candidates);
 
@@ -267,11 +293,13 @@ class CsvImportService
             DB::table('verification_jobs')->insert($jobRows);
 
             $batch->increment('imported_rows', count($newRows));
-        });
+        }, self::DEADLOCK_RETRIES);
 
         if ($errorCount > 0) {
             $batch->increment('error_count', $errorCount);
         }
+
+        $duplicateCount = $inFileDuplicates + $existingDuplicates;
         if ($duplicateCount > 0) {
             $batch->increment('duplicate_count', $duplicateCount);
         }

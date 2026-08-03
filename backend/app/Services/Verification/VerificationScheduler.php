@@ -19,6 +19,15 @@ use Illuminate\Support\Facades\DB;
  */
 class VerificationScheduler
 {
+    /**
+     * Attempts before giving up when MySQL picks one of these
+     * transactions as the deadlock victim. Ten workers claiming and
+     * releasing concurrently — against tables a running import is also
+     * writing to — makes deadlocks a normal contention outcome rather
+     * than a fault, and they clear on retry.
+     */
+    private const DEADLOCK_RETRIES = 5;
+
     public function __construct(private readonly array $config)
     {
     }
@@ -88,6 +97,11 @@ class VerificationScheduler
     /** @return Collection<int, VerificationJob> */
     private function attemptClaim(int $limit): Collection
     {
+        // Ten workers claiming concurrently, against the same tables a
+        // running import is writing to, means MySQL will occasionally
+        // pick this transaction as the deadlock victim. Retrying is the
+        // correct response — the alternative was an exception per
+        // occurrence, filling the log and skipping a poll cycle.
         return DB::transaction(function () use ($limit) {
             $poolSize = max($limit * 10, 100);
             $now = Carbon::now();
@@ -197,7 +211,7 @@ class VerificationScheduler
             }
 
             return VerificationJob::with(['email.domain'])->whereIn('id', $selectedJobIds)->get();
-        });
+        }, self::DEADLOCK_RETRIES);
     }
 
     /**
@@ -285,7 +299,7 @@ class VerificationScheduler
             if (! empty($updates['unresponsive_until']) && ! $wasAlreadyUnresponsive) {
                 $this->resolvePendingForUnresponsiveDomain($domain->id);
             }
-        });
+        }, self::DEADLOCK_RETRIES);
     }
 
     /**
