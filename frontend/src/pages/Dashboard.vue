@@ -67,6 +67,7 @@ function countdown(seconds) {
 const blockers = computed(() => stats.value?.blockers ?? [])
 const insights = computed(() => stats.value?.insights ?? [])
 const flags = computed(() => stats.value?.domain_flags ?? {})
+const budget = computed(() => stats.value?.connection_budget ?? null)
 const waiting = computed(() => (stats.value?.pending ?? 0) + (stats.value?.processing ?? 0))
 
 const throughputPeak = computed(() => {
@@ -144,6 +145,44 @@ onUnmounted(() => {
             {{ loading ? '—' : waiting.toLocaleString() }}
           </p>
         </div>
+      </div>
+
+      <!-- Outbound allowance. Shown because this is the number the
+           hosting provider measures, and the one that gets port 25
+           blocked if exceeded. -->
+      <div
+        v-if="!loading && budget && budget.limit > 0"
+        class="mt-3 rounded-lg border bg-[#fcfcfb] p-3.5 dark:bg-[#1a1a19] sm:mt-4 sm:p-4"
+        :class="budget.exhausted
+          ? 'border-[#fab219]'
+          : 'border-[#e1e0d9] dark:border-[#2c2c2a]'"
+      >
+        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <p class="text-xs font-medium text-[#52514e] dark:text-[#c3c2b7]">
+            Outbound connections this hour
+          </p>
+          <p class="text-xs text-[#898781]">
+            {{ budget.exhausted ? 'Paused — resumes' : 'Resets' }} in
+            {{ Math.max(1, Math.round(budget.resets_in_seconds / 60)) }}m
+          </p>
+        </div>
+        <p class="mt-2 text-xl font-semibold text-[#0b0b0b] dark:text-white sm:text-2xl">
+          {{ budget.used.toLocaleString() }}
+          <span class="text-sm font-normal text-[#898781]">/ {{ budget.limit.toLocaleString() }}</span>
+        </p>
+        <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#e1e0d9] dark:bg-[#2c2c2a]">
+          <div
+            class="h-full rounded-full transition-all"
+            :style="{
+              width: Math.min(100, (budget.used / budget.limit) * 100) + '%',
+              backgroundColor: budget.exhausted ? '#fab219' : '#2a78d6',
+            }"
+          />
+        </div>
+        <p v-if="budget.exhausted" class="mt-2 text-xs text-[#52514e] dark:text-[#c3c2b7]">
+          Hourly limit reached — verification pauses until the next hour. Queued work is
+          unaffected and resumes automatically.
+        </p>
       </div>
 
       <!-- What's going on. Answers the questions that previously needed

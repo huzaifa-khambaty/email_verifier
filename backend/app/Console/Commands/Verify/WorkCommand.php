@@ -4,6 +4,7 @@ namespace App\Console\Commands\Verify;
 
 use App\Models\Domain;
 use App\Models\WorkerStatus;
+use App\Services\Verification\ConnectionBudget;
 use App\Services\Verification\SmtpEmailVerifier;
 use App\Services\Verification\VerificationResult;
 use App\Services\Verification\VerificationScheduler;
@@ -29,7 +30,7 @@ class WorkCommand extends Command
 
     private bool $shouldStop = false;
 
-    public function handle(SmtpEmailVerifier $verifier, VerificationScheduler $scheduler): int
+    public function handle(SmtpEmailVerifier $verifier, VerificationScheduler $scheduler, ConnectionBudget $budget): int
     {
         $workerName = $this->option('name') ?: ('verify-work-'.getmypid());
         $idleSleep = (int) $this->option('idle-sleep');
@@ -92,6 +93,21 @@ class WorkCommand extends Command
                         'Domain is on the ignore list; not verified by choice.',
                         null,
                     );
+                } elseif ($budget->exhausted()) {
+                    // Out of hourly allowance and this address would need
+                    // a real connection. Put it back rather than burning
+                    // an attempt on it — nothing was tried, so it must not
+                    // count against the retry budget or record a result.
+                    $scheduler->releaseClaim($job);
+
+                    $this->line(sprintf(
+                        '[%s] hourly connection limit reached (%d/%d) — pausing %ds',
+                        $workerName,
+                        $budget->used(),
+                        $budget->limit(),
+                        $budget->secondsUntilReset()
+                    ));
+                    break;
                 } elseif ($email->domain->is_catch_all) {
                     // Safety net for addresses imported after a domain was
                     // already confirmed catch-all. The bulk resolver handles
@@ -105,6 +121,10 @@ class WorkCommand extends Command
                         null,
                     );
                 } else {
+                    // Charged before dialling, not after: if this crashes
+                    // mid-connection the remote server still saw it, so it
+                    // must still cost budget.
+                    $budget->consume();
                     $result = $verifier->verify($email->email, $email->domain->name);
                 }
 

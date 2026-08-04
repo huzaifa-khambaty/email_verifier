@@ -408,6 +408,29 @@ class VerificationScheduler
     }
 
     /**
+     * Returns a claimed job to the queue without recording a result.
+     *
+     * Used when the hourly connection budget runs out mid-batch: nothing
+     * was attempted, so the job must not consume an attempt, gain a
+     * processed_at, or leave the domain's connection slot held.
+     */
+    public function releaseClaim(VerificationJob $job): void
+    {
+        DB::transaction(function () use ($job) {
+            DB::table('verification_jobs')
+                ->where('id', $job->id)
+                ->where('status', 'PROCESSING')
+                ->update(['status' => 'PENDING', 'updated_at' => Carbon::now()]);
+
+            $domain = Domain::whereKey($job->email->domain_id)->lockForUpdate()->first();
+
+            if ($domain !== null) {
+                $domain->update(['active_workers' => max(0, $domain->active_workers - 1)]);
+            }
+        }, self::DEADLOCK_RETRIES);
+    }
+
+    /**
      * Whether this domain has ever returned a verdict on a specific
      * mailbox. Only checked at the moment a flag would be set, so the
      * cost falls on a rare transition rather than every result.

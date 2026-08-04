@@ -62,6 +62,14 @@ return [
         // timeout — so a slow but live job is never reaped mid-flight.
         'stale_claim_minutes' => (int) env('VERIFY_STALE_CLAIM_MINUTES', 10),
 
+        // Hard ceiling on outbound SMTP connections per clock hour,
+        // enforced regardless of worker count, per-domain delays or how
+        // much work is queued. Set after Contabo flagged a 3,908/hour
+        // spike: the rate needs to be a number we choose and can quote to
+        // them, not one that emerges from the shape of the last import.
+        // 0 disables the cap entirely.
+        'max_connections_per_hour' => (int) env('VERIFY_MAX_CONNECTIONS_PER_HOUR', 1000),
+
         // Domains seeded with the stricter major_provider_delay_seconds /
         // max_workers=1 defaults instead of the general defaults — see
         // DECISIONS.md "Stricter defaults for major providers".

@@ -18,8 +18,11 @@ class DashboardController extends Controller
      * verification_jobs row, not every row ever created for it — a
      * re-verified email shouldn't count twice.
      */
-    public function index(QueueDiagnostics $diagnostics, InsightGenerator $insights): JsonResponse
-    {
+    public function index(
+        QueueDiagnostics $diagnostics,
+        InsightGenerator $insights,
+        \App\Services\Verification\ConnectionBudget $budget
+    ): JsonResponse {
         $counts = DB::table('verification_jobs as vj')
             ->select('vj.status', DB::raw('count(*) as total'))
             ->whereRaw('vj.id = (select max(id) from verification_jobs where email_id = vj.email_id)')
@@ -74,6 +77,16 @@ class DashboardController extends Controller
             'domain_flags' => $flags,
             'throughput' => $diagnostics->recentThroughput(),
             'insights' => $insights->generate($stats, $blockers, $flags),
+            // Outbound allowance, so the rate being sent to mail providers
+            // is visible rather than inferred — this is the figure quoted
+            // to the hosting provider.
+            'connection_budget' => [
+                'used' => $budget->used(),
+                'limit' => $budget->limit(),
+                'remaining' => $budget->remaining(),
+                'exhausted' => $budget->exhausted(),
+                'resets_in_seconds' => $budget->secondsUntilReset(),
+            ],
             'generated_at' => now()->toIso8601String(),
         ]);
     }
