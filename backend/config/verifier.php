@@ -27,8 +27,8 @@ return [
     ],
 
     'scheduler' => [
-        'default_delay_seconds' => (int) env('VERIFY_DEFAULT_DELAY_SECONDS', 3),
-        'major_provider_delay_seconds' => (int) env('VERIFY_MAJOR_PROVIDER_DELAY_SECONDS', 8),
+        'default_delay_seconds' => (int) env('VERIFY_DEFAULT_DELAY_SECONDS', 6),
+        'major_provider_delay_seconds' => (int) env('VERIFY_MAJOR_PROVIDER_DELAY_SECONDS', 16),
         'default_max_workers' => (int) env('VERIFY_DEFAULT_MAX_WORKERS', 1),
         'max_attempts' => (int) env('VERIFY_MAX_ATTEMPTS', 5),
         'circuit_breaker_threshold' => (int) env('VERIFY_CIRCUIT_BREAKER_THRESHOLD', 5),
